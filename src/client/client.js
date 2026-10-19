@@ -41,6 +41,13 @@ if (name === "") {
   process.exit(1);
 }
 
+const HOST = process.env.SERVER_HOST || "127.0.0.1";
+const PORT = Number(process.env.SERVER_PORT || "8080");
+
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
+  process.exit(1);
+}
 const client = new net.Socket();
 const MAX_MESSAGE_BYTES = 8192;
 let pending = "";
@@ -80,7 +87,17 @@ client.on("data", (chunk) => {
     try {
       const message = JSON.parse(line);
 
-      if (message.action === "server-clients") {
+      if (message.action === "server-hello") {
+        console.log(kleur.green(message.msg));
+      } else if (message.action === "server-message") {
+        console.log(
+          kleur.cyan(`[Privé] <${message.sender}> ${message.msg}`),
+        );
+      } else if (message.action === "server-broadcast") {
+        console.log(
+          kleur.yellow(`[À tous] <${message.sender}> ${message.msg}`),
+        );
+      } else if (message.action === "server-clients") {
         console.log(
           kleur.blue("Utilisateurs connectés :"),
           message.clients.join(", "),
@@ -110,11 +127,14 @@ client.on("data", (chunk) => {
         console.log(
           kleur.cyan(`[${message.group}] <${message.sender}> ${message.msg}`),
         );
-      } else if (message.action === "server-group-messages") {
+      } else if (message.action === "server-group-messages") { // Historique des messages d'un groupe
         console.log(kleur.blue(`Historique de ${message.group} :`));
 
         for (const item of message.messages) {
-          console.log(kleur.cyan(`<${item.sender}> ${item.msg}`));
+          const date = item.date || "date inconnue";
+
+          console.log(kleur.cyan(`[${date}] <${item.sender}> ${item.msg}`),
+          );
         }
       } else if (message.action === "server-group-invited") {
         console.log(kleur.green(message.msg));
@@ -287,7 +307,7 @@ rl.on("line", (line) => {
     } else {
       client.write(
         JSON.stringify(buildClientKick(name, groupName, destination, reason)) +
-          "\n",
+        "\n",
       );
     }
   } else if (parts[0] === "ban") {
@@ -300,7 +320,7 @@ rl.on("line", (line) => {
     } else {
       client.write(
         JSON.stringify(buildClientBan(name, groupName, destination, reason)) +
-          "\n",
+        "\n",
       );
     }
   } else if (parts[0] === "unban") {
@@ -339,4 +359,4 @@ rl.on("close", () => {
   }
 });
 
-client.connect(8080, "127.0.0.1");
+client.connect(PORT, HOST);

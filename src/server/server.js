@@ -30,46 +30,30 @@ const clients = new Map();
 
 //pour les groupes:création, récupération, vérification de l'appartenance et de l'interdiction
 
-const groups = new Map();
+const {
+  createGroupForUser,
+  joinGroupForUser,
+  leaveGroupForUser,
+  getMembersForUser,
+  postGroupMessageForUser,
+  getGroupMessagesForUser,
+  inviteUserToGroup,
+  moderateGroupMember,
+  unbanUserFromGroup,
+  getGroupStatesForUser,
+  listGroupNames,
+  disconnectUserFromGroups,
+} = require("./groups"); //importation des fonctions de gestion des groupes
 
-function createGroup(name, creator) {
-  const group = {
-    name,
-    creator,
-    members: new Set([creator]),
-    invitations: new Map(),
-    bans: new Map(),
-    messages: [],
-    states: [],
-  };
 
-  groups.set(name, group);
+const HOST = process.env.SERVER_HOST || "127.0.0.1";
+const PORT = Number(process.env.SERVER_PORT || "8080");
+const MAX_MESSAGE_BYTES = 8192; // Limite de taille des messages en octets
 
-  return group;
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
+  process.exit(1);
 }
-
-function getGroup(name) {
-  return groups.get(name);
-}
-
-function isMember(group, username) {
-  return group.members.has(username);
-}
-
-function isBanned(group, username) {
-  return group.bans.has(username);
-}
-function addState(group, actor, type, details = {}) {
-  group.states.push({
-    actor,
-    type,
-    details,
-    timestamp: new Date().toISOString(),
-  });
-}
-const HOST = "127.0.0.1";
-const PORT = 8080;
-const MAX_MESSAGE_BYTES = 8192;
 
 function send(socket, message) {
   socket.write(JSON.stringify(message) + "\n");
@@ -233,145 +217,120 @@ const server = net.createServer((socket) => {
       // pour les groupes: création et récupération
 
       if (message.action === "cgroupe") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
+        const result = createGroupForUser(
+          message.group,
+          username,
+        );
 
-        if (groupName === "") {
-          sendError(socket, "Nom de groupe invalide.");
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (groupName.length > 30) {
-          sendError(socket, "Nom de groupe trop long.");
-          continue;
-        }
+        send(
+          socket,
+          buildServerGroupCreated(
+            username,
+            result.group.name,
+          ),
+        );
 
-        if (groups.has(groupName)) {
-          sendError(socket, `Le groupe ${groupName} existe déjà.`);
-          continue;
-        }
-
-        createGroup(groupName, username);
-        addState(groups.get(groupName), username, "group-created");
-
-        send(socket, buildServerGroupCreated(username, groupName));
         continue;
       }
 
       if (message.action === "groups") {
-        const groupNames = [...groups.keys()].sort((a, b) =>
-          a.localeCompare(b),
-        );
+        const groupNames = listGroupNames();
 
         send(socket, buildServerGroups(groupNames));
+
         continue;
       }
 
       if (message.action === "join") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
+        const result = joinGroupForUser(
+          message.group,
+          username,
+        );
 
-        const group = getGroup(groupName);
-
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (isBanned(group, username)) {
-          sendError(socket, `Vous êtes banni du groupe ${groupName}.`);
-          continue;
-        }
+        send(
+          socket,
+          buildServerGroupJoined(
+            username,
+            result.group.name,
+          ),
+        );
 
-        if (isMember(group, username)) {
-          sendError(socket, `Vous êtes déjà membre du groupe ${groupName}.`);
-          continue;
-        }
-
-        group.members.add(username);
-        group.invitations.delete(username);
-        addState(group, username, "user-joined");
-
-        send(socket, buildServerGroupJoined(username, groupName));
         continue;
       }
 
       if (message.action === "members") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const group = getGroup(groupName);
+        const result = getMembersForUser(
+          message.group,
+          username,
+        );
 
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (!isMember(group, username)) {
-          sendError(socket, `Vous n'êtes pas membre du groupe ${groupName}.`);
-          continue;
-        }
+        send(
+          socket,
+          buildServerMembers(
+            result.group.name,
+            result.members,
+          ),
+        );
 
-        const members = [...group.members].sort((a, b) => a.localeCompare(b));
-
-        send(socket, buildServerMembers(groupName, members));
         continue;
       }
 
       if (message.action === "leave") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const group = getGroup(groupName);
+        const result = leaveGroupForUser(
+          message.group,
+          username,
+        );
 
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (!isMember(group, username)) {
-          sendError(socket, `Vous n'êtes pas membre du groupe ${groupName}.`);
-          continue;
-        }
+        send(
+          socket,
+          buildServerGroupLeft(
+            username,
+            result.group.name,
+          ),
+        );
 
-        group.members.delete(username);
-        addState(group, username, "user-left");
-
-        send(socket, buildServerGroupLeft(username, groupName));
         continue;
       }
+
       if (message.action === "gbroadcast") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const group = getGroup(groupName);
-
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
-          continue;
-        }
-
-        if (!isMember(group, username)) {
-          sendError(socket, `Vous n'êtes pas membre du groupe ${groupName}.`);
-          continue;
-        }
-
-        if (typeof message.msg !== "string" || message.msg.trim() === "") {
-          sendError(socket, "Message vide ou invalide.");
-          continue;
-        }
-
-        const groupMessage = {
-          sender: username,
-          msg: message.msg,
-        };
-
-        group.messages.push(groupMessage);
-
-        const serverMessage = buildServerGroupMessage(
+        const result = postGroupMessageForUser(
+          message.group,
           username,
-          groupName,
           message.msg,
         );
 
-        for (const memberName of group.members) {
+        if (result.error) {
+          sendError(socket, result.error);
+          continue;
+        }
+
+        const serverMessage = buildServerGroupMessage(
+          result.message.sender,
+          result.groupName,
+          result.message.msg,
+        );
+
+        for (const memberName of result.members) {
           const memberSocket = clients.get(memberName);
 
           if (memberSocket) {
@@ -383,185 +342,139 @@ const server = net.createServer((socket) => {
       }
 
       if (message.action === "msgs") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const group = getGroup(groupName);
+        const result = getGroupMessagesForUser(
+          message.group,
+          username,
+        );
 
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (!isMember(group, username)) {
-          sendError(socket, `Vous n'êtes pas membre du groupe ${groupName}.`);
-          continue;
-        }
-
-        send(socket, buildServerGroupMessages(groupName, group.messages));
+        send(
+          socket,
+          buildServerGroupMessages(
+            result.groupName,
+            result.messages,
+          ),
+        );
 
         continue;
       }
       if (message.action === "invite") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const destination =
-          typeof message.dest === "string" ? message.dest.trim() : "";
+        const result = inviteUserToGroup(
+          message.group,
+          username,
+          message.dest,
+        );
 
-        const group = getGroup(groupName);
-
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (group.creator !== username) {
-          sendError(socket, "Seul le créateur peut inviter des utilisateurs.");
-          continue;
-        }
+        send(
+          socket,
+          buildServerGroupInvited(
+            username,
+            result.groupName,
+            result.destination,
+          ),
+        );
 
-        if (destination === "") {
-          sendError(socket, "Destinataire invalide.");
-          continue;
-        }
-
-        if (isMember(group, destination)) {
-          sendError(socket, `${destination} est déjà membre du groupe.`);
-          continue;
-        }
-
-        if (isBanned(group, destination)) {
-          sendError(socket, `${destination} est banni du groupe.`);
-          continue;
-        }
-
-        group.invitations.set(destination, username);
-        addState(group, username, "user-invited", { dest: destination });
-
-        send(socket, buildServerGroupInvited(username, groupName, destination));
-
-        const destinationSocket = clients.get(destination);
+        const destinationSocket = clients.get(
+          result.destination,
+        );
 
         if (destinationSocket) {
           send(
             destinationSocket,
-            buildServerGroupInvitation(username, groupName),
+            buildServerGroupInvitation(
+              username,
+              result.groupName,
+            ),
           );
         }
 
         continue;
       }
-
       if (message.action === "kick" || message.action === "ban") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const destination =
-          typeof message.dest === "string" ? message.dest.trim() : "";
-        const reason =
-          typeof message.reason === "string" && message.reason.trim() !== ""
-            ? message.reason.trim()
-            : "aucune raison";
+        const result = moderateGroupMember(
+          message.group,
+          username,
+          message.dest,
+          message.reason,
+          message.action,
+        );
 
-        const group = getGroup(groupName);
-
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (group.creator !== username) {
-          sendError(socket, "Seul le créateur peut modérer ce groupe.");
-          continue;
-        }
+        const response =
+          message.action === "ban"
+            ? buildServerGroupBanned(
+              username,
+              result.groupName,
+              result.destination,
+              result.reason,
+            )
+            : buildServerGroupKicked(
+              username,
+              result.groupName,
+              result.destination,
+              result.reason,
+            );
 
-        if (destination === username) {
-          sendError(socket, "Vous ne pouvez pas vous modérer vous-même.");
-          continue;
-        }
-
-        if (!isMember(group, destination)) {
-          sendError(socket, `${destination} n'est pas membre du groupe.`);
-          continue;
-        }
-
-        group.members.delete(destination);
-        group.invitations.delete(destination);
-        if (message.action === "ban") {
-          addState(group, username, "user-banned", {
-            dest: destination,
-            reason,
-          });
-        } else {
-          addState(group, username, "user-kicked", {
-            dest: destination,
-            reason,
-          });
-        }
-
-        if (message.action === "ban") {
-          group.bans.set(destination, reason);
-          send(
-            socket,
-            buildServerGroupBanned(username, groupName, destination, reason),
-          );
-        } else {
-          send(
-            socket,
-            buildServerGroupKicked(username, groupName, destination, reason),
-          );
-        }
+        send(socket, response);
 
         continue;
       }
 
       if (message.action === "unban") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const destination =
-          typeof message.dest === "string" ? message.dest.trim() : "";
+        const result = unbanUserFromGroup(
+          message.group,
+          username,
+          message.dest,
+        );
 
-        const group = getGroup(groupName);
-
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
-
-        if (group.creator !== username) {
-          sendError(socket, "Seul le créateur peut modérer ce groupe.");
-          continue;
-        }
-
-        if (!isBanned(group, destination)) {
-          sendError(socket, `${destination} n'est pas banni du groupe.`);
-          continue;
-        }
-
-        group.bans.delete(destination);
-        addState(group, username, "user-unbanned", { dest: destination });
 
         send(
           socket,
-          buildServerGroupUnbanned(username, groupName, destination),
+          buildServerGroupUnbanned(
+            username,
+            result.groupName,
+            result.destination,
+          ),
         );
+
         continue;
       }
-
       if (message.action === "states") {
-        const groupName =
-          typeof message.group === "string" ? message.group.trim() : "";
-        const group = getGroup(groupName);
+        const result = getGroupStatesForUser(
+          message.group,
+          username,
+        );
 
-        if (!group) {
-          sendError(socket, `Le groupe ${groupName} n'existe pas.`);
+        if (result.error) {
+          sendError(socket, result.error);
           continue;
         }
 
-        if (!isMember(group, username)) {
-          sendError(socket, `Vous n'êtes pas membre du groupe ${groupName}.`);
-          continue;
-        }
+        send(
+          socket,
+          buildServerGroupStates(
+            result.groupName,
+            result.states,
+          ),
+        );
 
-        send(socket, buildServerGroupStates(groupName, group.states));
         continue;
       }
       sendError(socket, "Action inconnue.");
@@ -583,14 +496,7 @@ const server = net.createServer((socket) => {
     if (username !== null && clients.get(username) === socket) {
       clients.delete(username);
 
-      for (const group of groups.values()) {
-        if (group.members.has(username)) {
-          group.members.delete(username);
-          addState(group, username, "user-disconnected");
-        }
-
-        group.invitations.delete(username);
-      }
+      disconnectUserFromGroups(username);
 
       console.error(`Nom retiré : ${username}`);
     }
