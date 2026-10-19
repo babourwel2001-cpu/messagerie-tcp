@@ -9,7 +9,14 @@ const {
   buildClientListGroups,
   buildClientJoinGroup,
   buildClientListMembers,
-  buildClientLeaveGroup
+  buildClientLeaveGroup,
+  buildClientGroupBroadcast,
+  buildClientListGroupMessages,
+  buildClientInvite,
+  buildClientKick,
+  buildClientBan,
+  buildClientUnban,
+  buildClientListGroupStates,
 } = require("../common/messages");
 
 const net = require("node:net");
@@ -22,7 +29,7 @@ const argv = yargs(hideBin(process.argv))
   .option("name", {
     type: "string",
     demandOption: true,
-    describe: "Nom de l'utilisateur"
+    describe: "Nom de l'utilisateur",
   })
   .strict()
   .parse();
@@ -43,7 +50,7 @@ client.setEncoding("utf8");
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
-  prompt: ">"
+  prompt: ">",
 });
 
 client.on("connect", () => {
@@ -76,7 +83,7 @@ client.on("data", (chunk) => {
       if (message.action === "server-clients") {
         console.log(
           kleur.blue("Utilisateurs connectés :"),
-          message.clients.join(", ")
+          message.clients.join(", "),
         );
       } else if (message.action === "server-goodbye") {
         console.log(kleur.green(message.msg));
@@ -88,7 +95,7 @@ client.on("data", (chunk) => {
       } else if (message.action === "server-groups") {
         console.log(
           kleur.blue("Groupes disponibles :"),
-          message.groups.join(", ")
+          message.groups.join(", "),
         );
       } else if (message.action === "server-group-joined") {
         console.log(kleur.green(message.msg));
@@ -97,8 +104,45 @@ client.on("data", (chunk) => {
       } else if (message.action === "server-members") {
         console.log(
           kleur.blue(`Membres de ${message.group} :`),
-          message.members.join(", ")
+          message.members.join(", "),
         );
+      } else if (message.action === "server-group-message") {
+        console.log(
+          kleur.cyan(`[${message.group}] <${message.sender}> ${message.msg}`),
+        );
+      } else if (message.action === "server-group-messages") {
+        console.log(kleur.blue(`Historique de ${message.group} :`));
+
+        for (const item of message.messages) {
+          console.log(kleur.cyan(`<${item.sender}> ${item.msg}`));
+        }
+      } else if (message.action === "server-group-invited") {
+        console.log(kleur.green(message.msg));
+      } else if (message.action === "server-group-invitation") {
+        console.log(kleur.magenta(message.msg));
+      } else if (message.action === "server-group-kicked") {
+        console.log(kleur.yellow(message.msg));
+      } else if (message.action === "server-group-banned") {
+        console.log(kleur.red(message.msg));
+      } else if (message.action === "server-group-unbanned") {
+        console.log(kleur.green(message.msg));
+      } else if (message.action === "server-group-states") {
+        console.log(kleur.blue(`Événements de ${message.group} :`));
+
+        for (const event of message.states) {
+          const destination = event.details.dest
+            ? ` (${event.details.dest})`
+            : "";
+          const reason = event.details.reason
+            ? ` - ${event.details.reason}`
+            : "";
+
+          console.log(
+            kleur.yellow(
+              `[${event.timestamp}] ${event.actor} -> ${event.type}${destination}${reason}`,
+            ),
+          );
+        }
       } else {
         console.log("Received:", message);
       }
@@ -144,7 +188,7 @@ rl.on("line", (line) => {
       console.log("Usage : s;destinataire;message");
     } else {
       client.write(
-        JSON.stringify(buildClientSend(name, destination, text)) + "\n"
+        JSON.stringify(buildClientSend(name, destination, text)) + "\n",
       );
     }
   } else if (parts[0] === "b") {
@@ -166,7 +210,7 @@ rl.on("line", (line) => {
       console.log("Usage : cg;nom_du_groupe");
     } else {
       client.write(
-        JSON.stringify(buildClientCreateGroup(name, groupName)) + "\n"
+        JSON.stringify(buildClientCreateGroup(name, groupName)) + "\n",
       );
     }
   } else if (parts[0] === "groups") {
@@ -178,7 +222,7 @@ rl.on("line", (line) => {
       console.log("Usage : j;nom_du_groupe");
     } else {
       client.write(
-        JSON.stringify(buildClientJoinGroup(name, groupName)) + "\n"
+        JSON.stringify(buildClientJoinGroup(name, groupName)) + "\n",
       );
     }
   } else if (parts[0] === "members") {
@@ -188,7 +232,7 @@ rl.on("line", (line) => {
       console.log("Usage : members;nom_du_groupe");
     } else {
       client.write(
-        JSON.stringify(buildClientListMembers(name, groupName)) + "\n"
+        JSON.stringify(buildClientListMembers(name, groupName)) + "\n",
       );
     }
   } else if (parts[0] === "leave") {
@@ -198,12 +242,91 @@ rl.on("line", (line) => {
       console.log("Usage : leave;nom_du_groupe");
     } else {
       client.write(
-        JSON.stringify(buildClientLeaveGroup(name, groupName)) + "\n"
+        JSON.stringify(buildClientLeaveGroup(name, groupName)) + "\n",
+      );
+    }
+  } else if (parts[0] === "bg") {
+    const groupName = parts[1]?.trim();
+    const text = parts.slice(2).join(";").trim();
+
+    if (!groupName || !text) {
+      console.log("Usage : bg;nom_du_groupe;message");
+    } else {
+      client.write(
+        JSON.stringify(buildClientGroupBroadcast(name, groupName, text)) + "\n",
+      );
+    }
+  } else if (parts[0] === "messages") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : messages;nom_du_groupe");
+    } else {
+      client.write(
+        JSON.stringify(buildClientListGroupMessages(name, groupName)) + "\n",
+      );
+    }
+  } else if (parts[0] === "invite") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+
+    if (!groupName || !destination) {
+      console.log("Usage : invite;nom_du_groupe;utilisateur");
+    } else {
+      client.write(
+        JSON.stringify(buildClientInvite(name, groupName, destination)) + "\n",
+      );
+    }
+  } else if (parts[0] === "kick") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+    const reason = parts.slice(3).join(";").trim() || "aucune raison";
+
+    if (!groupName || !destination) {
+      console.log("Usage : kick;groupe;utilisateur;raison");
+    } else {
+      client.write(
+        JSON.stringify(buildClientKick(name, groupName, destination, reason)) +
+          "\n",
+      );
+    }
+  } else if (parts[0] === "ban") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+    const reason = parts.slice(3).join(";").trim() || "aucune raison";
+
+    if (!groupName || !destination) {
+      console.log("Usage : ban;groupe;utilisateur;raison");
+    } else {
+      client.write(
+        JSON.stringify(buildClientBan(name, groupName, destination, reason)) +
+          "\n",
+      );
+    }
+  } else if (parts[0] === "unban") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+
+    if (!groupName || !destination) {
+      console.log("Usage : unban;groupe;utilisateur");
+    } else {
+      client.write(
+        JSON.stringify(buildClientUnban(name, groupName, destination)) + "\n",
+      );
+    }
+  } else if (parts[0] === "states") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : states;nom_du_groupe");
+    } else {
+      client.write(
+        JSON.stringify(buildClientListGroupStates(name, groupName)) + "\n",
       );
     }
   } else {
     console.log(
-      "Commande inconnue. Utilisez s;destinataire;message, b;message, ls, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe."
+      "Commande inconnue. Utilisez s;destinataire;message, b;message, ls, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",
     );
   }
 

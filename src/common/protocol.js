@@ -23,8 +23,31 @@ const ACTIONS = {
   CLIENT_LIST_MEMBERS: "members",
   CLIENT_LEAVE_GROUP: "leave",
   SERVER_GROUP_LEFT: "server-group-left",
-  SERVER_MEMBERS: "server-members"
-  
+  SERVER_MEMBERS: "server-members",
+
+  CLIENT_GROUP_BROADCAST: "gbroadcast",
+  CLIENT_LIST_GROUP_MESSAGES: "msgs",
+  SERVER_GROUP_MESSAGE: "server-group-message",
+  SERVER_GROUP_MESSAGES: "server-group-messages",
+
+  //pour inviter
+
+  CLIENT_INVITE: "invite",
+  SERVER_GROUP_INVITATION: "server-group-invitation",
+  SERVER_GROUP_INVITED: "server-group-invited",
+
+  //pour modérer les groupes
+
+  CLIENT_KICK: "kick",
+  CLIENT_BAN: "ban",
+  CLIENT_UNBAN: "unban",
+  SERVER_GROUP_KICKED: "server-group-kicked",
+  SERVER_GROUP_BANNED: "server-group-banned",
+  SERVER_GROUP_UNBANNED: "server-group-unbanned",
+
+  // pour states
+  CLIENT_LIST_GROUP_STATES: "states",
+  SERVER_GROUP_STATES: "server-group-states",
 };
 
-module.exports = { ACTIONS }
+module.exports = { ACTIONS };
