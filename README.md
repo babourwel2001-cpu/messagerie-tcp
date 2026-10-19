@@ -1,4 +1,4 @@
-# Messagerie TCP — code de départ
+# Messagerie TCP - code de départ
 
 Dans deux terminaux ouverts à la racine :
 
@@ -69,12 +69,38 @@ redémarrage du serveur. Aucune donnée de groupe n’est persistée sur disque.
 - Le serveur se base sur l’identité associée à la socket, et non uniquement sur le champ `sender`.
 - Les bannissements restent en mémoire jusqu’à leur levée ou au redémarrage du serveur.
 
-### Prochaines étapes
+## Protocole commun
 
-- Diffuser un message dans un groupe avec `bg;groupe;message`.
-- Consulter l’historique des messages avec `messages;groupe`.
-- Implémenter les invitations avec `invite;groupe;utilisateur`.
-- Implémenter la modération avec `kick`, `ban` et `unban`.
-- Ajouter l’historique des événements avec `states;groupe`.
-- Réaliser des tests croisés avec une autre équipe.
+- Transport : TCP.
+- Format : un objet JSON par ligne.
+- Délimiteur : `\n` (LF).
+- Encodage : UTF-8.
+- Taille maximale d’un message : 8192 octets.
+- Les messages incomplets sont conservés dans un tampon jusqu’à réception complète.
+
+## Commandes de groupe
+
+| Commande | Action JSON | Description |
+|---|---|---|
+| `cg;groupe` | `cgroupe` | Créer un groupe |
+| `groups` | `groups` | Lister les groupes |
+| `j;groupe` | `join` | Rejoindre un groupe |
+| `members;groupe` | `members` | Lister les membres |
+| `leave;groupe` | `leave` | Quitter un groupe |
+| `bg;groupe;message` | `gbroadcast` | Diffuser dans un groupe |
+| `messages;groupe` | `msgs` | Consulter les messages |
+| `invite;groupe;user` | `invite` | Inviter un utilisateur |
+| `kick;groupe;user;raison` | `kick` | Exclure un membre |
+| `ban;groupe;user;raison` | `ban` | Bannir un membre |
+| `unban;groupe;user` | `unban` | Lever un bannissement |
+| `states;groupe` | `states` | Consulter les événements |
+
+## Règles choisies
+
+- Le créateur devient membre à la création du groupe.
+- Seul le créateur peut inviter, exclure, bannir et débannir.
+- Un utilisateur banni ne peut pas rejoindre le groupe avant `unban`.
+- `unban` ne rend pas automatiquement l’utilisateur membre.
+- Les messages et les événements sont conservés en mémoire.
+- À la déconnexion, l’utilisateur est retiré des groupes.
 
