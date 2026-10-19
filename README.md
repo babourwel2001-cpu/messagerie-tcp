@@ -42,3 +42,39 @@ exclure ou bannir un membre ; il ne peut pas se modérer lui-même.
 Lorsqu’un utilisateur se déconnecte, il est retiré des groupes, mais les groupes
 sont conservés. Les bannissements restent en mémoire jusqu’à leur levée ou au
 redémarrage du serveur. Aucune donnée de groupe n’est persistée sur disque.
+
+## État d’avancement
+
+### Fonctionnalités terminées
+
+- Présentation automatique du client à la connexion.
+- Message privé entre utilisateurs.
+- Diffusion générale.
+- Liste des utilisateurs connectés.
+- Déconnexion et nettoyage de la socket.
+- Création d’un groupe avec `cg;nom`.
+- Liste des groupes avec `groups`.
+- Adhésion à un groupe avec `j;nom`.
+
+### Fonctionnalités en cours
+
+- Liste des membres avec `members;nom`.
+- Quitter un groupe avec `leave;nom`.
+
+### Choix techniques
+
+- Les messages sont encodés en JSON et délimités par une nouvelle ligne (`\n`).
+- Le serveur conserve les groupes en mémoire dans une `Map`.
+- Les membres sont stockés dans un `Set` afin d’éviter les doublons.
+- Le serveur se base sur l’identité associée à la socket, et non uniquement sur le champ `sender`.
+- Les bannissements restent en mémoire jusqu’à leur levée ou au redémarrage du serveur.
+
+### Prochaines étapes
+
+- Diffuser un message dans un groupe avec `bg;groupe;message`.
+- Consulter l’historique des messages avec `messages;groupe`.
+- Implémenter les invitations avec `invite;groupe;utilisateur`.
+- Implémenter la modération avec `kick`, `ban` et `unban`.
+- Ajouter l’historique des événements avec `states;groupe`.
+- Réaliser des tests croisés avec une autre équipe.
+
