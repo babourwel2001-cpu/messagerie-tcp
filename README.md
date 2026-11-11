@@ -15,9 +15,17 @@ Le projet propose :
 - l’exclusion, le bannissement et le débannissement ;
 - un journal des événements des groupes.
 
-Ce projet est pédagogique. Il ne comporte pas d’authentification
-ni de chiffrement applicatif et ne doit pas être exposé directement
+Ce projet est pédagogique et ne doit pas être exposé directement
 sur Internet.
+
+Les sections 1 à 17 décrivent le socle de messagerie des parties
+précédentes. Certaines vérifications et harmonisations y restent
+à réaliser.
+
+La partie 3 est en cours de développement et est documentée à partir
+de la section 18. À ce stade, les premiers tests ECDH locaux passent,
+mais ni l’authentification par mot de passe ni le canal chiffré
+ne sont intégrés à la messagerie.
 
 ---
 
@@ -40,15 +48,20 @@ Les bibliothèques utilisées par le client comprennent notamment
 
 ```text
 messagerie-tcp/
+messagerie-tcp/
 ├── src/
 │   ├── client/
-│   │   └── client.js
+│   │   ├── client.js
+│   │   ├── client-ui.js
+│   │   └── msg.json
 │   ├── common/
 │   │   ├── messages.js
 │   │   └── protocol.js
 │   └── server/
 │       ├── server.js
 │       └── groups.js
+├── test/
+│   └── ecdh-lab.test.js
 ├── package.json
 ├── package-lock.json
 ├── README.md
@@ -757,3 +770,171 @@ Pour chaque test, noter :
 - Valider les règles de groupe avec l’autre implémentation.
 - Harmoniser le protocole.
 - Effectuer et consigner les tests croisés.
+
+---
+
+## 18. Partie 3 — Objectifs et répartition
+
+La partie 3 ajoute deux responsabilités distinctes :
+
+- reconnaître durablement les utilisateurs grâce à des comptes ;
+- protéger les échanges réseau de la messagerie.
+
+### Répartition du travail
+
+| Branche | Responsabilités principales | Travaux pratiques |
+|---|---|---|
+| `partie3-securite` | ECDH, HKDF, AES-256-CBC, HMAC, séquences et cadrage des enveloppes | TP 07 à 09 |
+| `partie3-comptes` | SQLite, bcrypt, identité de session et historique persistant | TP 03 à 06 |
+
+La préparation et les observations réseau des TP 01 et 02,
+l’intégration du TP 10 et l’analyse des limites du TP 11
+sont réalisées en commun.
+
+### Méthode de validation
+
+Chaque étape distingue :
+
+1. le problème à résoudre ;
+2. le mécanisme retenu ;
+3. les tests exécutés ;
+4. les résultats observés ;
+5. les limites de ce qui a été démontré.
+
+Une fonctionnalité prévue ou testée isolément n’est pas considérée
+comme intégrée à la messagerie.
+
+---
+
+## 19. TP 07 — Première expérience ECDH
+
+### Objectif
+
+Vérifier le fonctionnement local d’ECDH avant de développer
+la négociation sur TCP.
+
+### Fichier de test
+
+`test/ecdh-lab.test.js`
+
+### Organisation de l’expérience
+
+Le test simule un client et un serveur dans un même processus,
+sans connexion réseau.
+
+Chaque participant génère une paire de clés sur la courbe
+`prime256v1`. Il calcule ensuite un secret avec sa propre clé privée
+et la clé publique de l’autre participant.
+
+Les clés privées et les secrets partagés ne sont pas affichés.
+
+### Exécution
+
+Depuis la racine du projet :
+
+```bash
+node --test test/ecdh-lab.test.js
+```
+
+### Résultats observés
+
+Exécution du 11 novembre 2026 :
+
+| Test | Résultat |
+|---|---|
+| Le client et le serveur obtiennent le même secret | Réussi |
+| Deux sessions indépendantes ont des secrets différents | Réussi |
+| Un point invalide est rejeté | Réussi |
+
+Bilan : 3 tests exécutés, 3 réussis, 0 échec.
+
+### Portée des tests
+
+Le premier test vérifie l’égalité des secrets calculés
+par les deux participants.
+
+Le deuxième vérifie que les deux sessions indépendantes
+créées pendant l’exécution ne produisent pas le même secret.
+Il ne constitue pas une analyse statistique du hasard.
+
+Le troisième vérifie le rejet d’un point invalide particulier.
+Il ne couvre pas toutes les entrées malformées possibles.
+
+### Limites actuelles
+
+Ces tests ne vérifient pas encore :
+
+- l’échange des clés sur TCP ;
+- la validation complète des messages de négociation ;
+- la gestion d’une négociation invalide par le serveur ;
+- l’identité du serveur ;
+- la dérivation des clés avec HKDF ;
+- le chiffrement et l’intégrité des messages ;
+- la protection contre le rejeu.
+
+Aucun message de discussion n’est encore protégé par ce travail.
+
+---
+
+## 20. Partie 3 — État d’avancement de la sécurité
+
+### TP 07 — Échange ECDH
+
+- [x] Créer une expérience locale avec deux participants.
+- [x] Vérifier l’égalité des secrets calculés.
+- [x] Vérifier le renouvellement entre deux sessions de test.
+- [x] Vérifier le rejet d’un point invalide.
+- [ ] Créer le module commun `src/common/crypto.js`.
+- [ ] Définir et valider le format des clés publiques et des nonces.
+- [ ] Implémenter les messages `client-key` et `server-key`.
+- [ ] Brancher la négociation sur TCP.
+- [ ] Tester la fermeture propre d’une négociation invalide.
+
+### Dérivation des clés
+
+- [ ] Implémenter HKDF-SHA-256 selon le contrat du sujet.
+- [ ] Vérifier que les deux participants dérivent les mêmes clés.
+- [ ] Vérifier qu’un changement de contexte ou de nonce
+      modifie les clés dérivées.
+
+### TP 08 — Enveloppe chiffrée et authentifiée
+
+- [ ] Implémenter AES-256-CBC avec un nouvel IV par message.
+- [ ] Définir les octets couverts par le HMAC.
+- [ ] Vérifier le HMAC avant le déchiffrement.
+- [ ] Tester un aller-retour et les altérations de l’enveloppe.
+
+### TP 09 — Rejeu et cadrage TCP
+
+- [ ] Gérer les séquences indépendamment dans chaque direction.
+- [ ] Définir le traitement des sauts et du dépassement du compteur.
+- [ ] Rejeter les enveloppes rejouées.
+- [ ] Tester les enveloppes fragmentées et regroupées.
+- [ ] Limiter les tailles et le tampon de réception.
+- [ ] Vérifier qu’un rejet ne déclenche aucune commande métier.
+
+### Intégration et analyse
+
+- [ ] TP 10 : intégrer l’authentification et la messagerie
+      au canal protégé.
+- [ ] Rejouer les scénarios des parties précédentes.
+- [ ] Comparer les captures réseau avant et après protection.
+- [ ] TP 11 : expliquer l’attaque de l’homme du milieu.
+- [ ] Décrire une évolution vers TLS avec validation du serveur.
+
+### Points de contrat à préciser
+
+Avant l’intégration et les tests croisés, documenter :
+
+- l’encodage et le format des clés publiques ;
+- la taille et l’encodage des nonces ;
+- les règles de validation des messages de négociation ;
+- la représentation binaire utilisée pour calculer le HMAC ;
+- les règles des compteurs de séquence ;
+- les limites du message applicatif et de l’enveloppe ;
+- le comportement en cas d’erreur et de déconnexion ;
+- l’interface entre le canal sécurisé et la couche applicative.
+
+Les paramètres déjà imposés par le sujet doivent être conservés.
+Les choix complémentaires ne doivent pas être décidés
+unilatéralement avant un test croisé.
