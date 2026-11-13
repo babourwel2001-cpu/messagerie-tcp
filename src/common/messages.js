@@ -1,4 +1,25 @@
 const { ACTIONS } = require("./protocol");
+const { CURVE } = require("./crypto");
+
+
+// Négociation du canal protégé - partie 3
+function buildClientKey(publicKey, clientNonce) {
+  return {
+    action: ACTIONS.CLIENT_KEY,
+    curve: CURVE,
+    publicKey,
+    clientNonce,
+  };
+}
+
+function buildServerKey(publicKey, serverNonce) {
+  return {
+    action: ACTIONS.SERVER_KEY,
+    curve: CURVE,
+    publicKey,
+    serverNonce,
+  };
+}
 
 function buildClientHello(sender) {
   return {
@@ -316,6 +337,9 @@ function buildServerGroupStates(group, states) {
   };
 }
 module.exports = {
+    buildClientKey,
+  buildServerKey,
+  
   buildClientHello,
   buildServerHello,
   buildClientSend,

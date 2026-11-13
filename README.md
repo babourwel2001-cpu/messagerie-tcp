@@ -884,7 +884,9 @@ Aucun message de discussion n’est encore protégé par ce travail.
 - [x] Vérifier l’égalité des secrets calculés.
 - [x] Vérifier le renouvellement entre deux sessions de test.
 - [x] Vérifier le rejet d’un point invalide.
-- [ ] Créer le module commun `src/common/crypto.js`.
+- [x] Créer le module commun `src/common/crypto.js`.
+- [x] Ajouter les constantes `client-key` et `server-key`.
+- [x] Ajouter et tester les constructeurs des messages de négociation.
 - [ ] Définir et valider le format des clés publiques et des nonces.
 - [ ] Implémenter les messages `client-key` et `server-key`.
 - [ ] Brancher la négociation sur TCP.

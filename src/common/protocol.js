@@ -1,4 +1,8 @@
 const ACTIONS = {
+    // Négociation du canal protégé — partie 3
+  CLIENT_KEY: "client-key",
+  SERVER_KEY: "server-key",
+  
   CLIENT_HELLO: "client-hello",
   SERVER_HELLO: "server-hello",
   CLIENT_SEND: "client-send",
