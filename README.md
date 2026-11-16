@@ -876,7 +876,7 @@ Aucun message de discussion n’est encore protégé par ce travail.
 
 ---
 
-## 20. Partie 3 — État d’avancement de la sécurité
+## 20. Partie 3 -  État d’avancement de la sécurité
 
 ### TP 07 — Échange ECDH
 
@@ -887,17 +887,107 @@ Aucun message de discussion n’est encore protégé par ce travail.
 - [x] Créer le module commun `src/common/crypto.js`.
 - [x] Ajouter les constantes `client-key` et `server-key`.
 - [x] Ajouter et tester les constructeurs des messages de négociation.
+- [x] Valider les messages complets `client-key` et `server-key`.
+- [x] Tester les champs manquants, supplémentaires et invalides.
+- [x] Vérifier le rejet d'un point elliptique invalide.
 - [ ] Définir et valider le format des clés publiques et des nonces.
 - [ ] Implémenter les messages `client-key` et `server-key`.
 - [ ] Brancher la négociation sur TCP.
 - [ ] Tester la fermeture propre d’une négociation invalide.
 
+### Validation locale de la négociation et de HKDF
+
+Fichiers de tests exécutés :
+
+- `test/ecdh-lab.test.js`
+- `test/crypto.test.js`
+- `test/negociation.test.js`
+- `test/hkdf.test.js`
+
+Commande depuis la racine du projet :
+
+  node --test test/ecdh-lab.test.js test/crypto.test.js test/negociation.test.js test/hkdf.test.js
+
+Résultat observé le 13 novembre 2026 :
+38 tests exécutés, 38 réussis, 0 échec.
+
+Ces tests ne valident pas encore la négociation sur TCP,
+la gestion des états de connexion ni la fermeture d'une socket
+après réception d'un message invalide.
+
+### Premier essai ECDH sur TCP
+
+Essai réalisé le 13 novembre 2026 avec le client classique
+`src/client/client.js`.
+
+Commande :
+
+    npm run client -- --name alice
+
+Résultats observés côté client :
+
+- connexion TCP établie ;
+- envoi du message de clé ;
+- réception et validation de la réponse du serveur ;
+- calcul local du secret ECDH ;
+- fermeture du client avec la commande locale `q`.
+
+Le canal chiffré n'est pas encore implémenté.
+Cet essai ne vérifie pas à lui seul l'égalité des secrets
+des deux côtés ni l'identité du serveur.
+
+### Blocage des commandes avant le canal protégé
+
+Après la négociation ECDH, la commande `ls` a été saisie
+dans le client classique.
+
+Résultat observé :
+
+    Commandes indisponibles : chiffrement et intégrité non encore intégrés.
+
+Le blocage local de cette commande est vérifié.
+Le refus d'une commande envoyée directement au serveur
+doit encore être testé séparément.
+
 ### Dérivation des clés
 
-- [ ] Implémenter HKDF-SHA-256 selon le contrat du sujet.
-- [ ] Vérifier que les deux participants dérivent les mêmes clés.
-- [ ] Vérifier qu’un changement de contexte ou de nonce
+- [x] Implémenter HKDF-SHA-256 selon le contrat du sujet.
+- [x] Vérifier que les deux participants dérivent les mêmes clés.
+- [x] Vérifier qu’un changement de contexte ou de nonce
       modifie les clés dérivées.
+- [x] Vérifier la reproductibilité avec les mêmes entrées.
+- [x] Vérifier la séparation des clés de chiffrement et de MAC.
+- [x] Rejeter les types et tailles incorrects.
+
+La dérivation est implémentée dans `deriverClesSession()`
+de `src/common/crypto.js`.
+
+Paramètres utilisés :
+
+- fonction de dérivation : HKDF-SHA-256 ;
+- secret d’entrée : secret ECDH de 32 octets ;
+- sel : `clientNonce` suivi de `serverNonce` ;
+- contexte : `messagerie-tcp-v1` ;
+- sortie : 64 octets ;
+- 32 premiers octets : clé de chiffrement AES ;
+- 32 derniers octets : clé HMAC.
+
+Les deux participants utilisent le même ordre de nonces :
+`clientNonce` puis `serverNonce`.
+
+Fichier de tests : `test/hkdf.test.js`.
+
+Commande :
+
+```bash
+node --test test/hkdf.test.js
+```
+
+Résultat observé : 8 tests exécutés, 8 réussis, 0 échec.
+
+Ces tests valident la dérivation locale. Ils ne prouvent pas
+encore que le client et le serveur utilisent HKDF sur TCP,
+ni que les clés produites sont compatibles lors d’une connexion réelle.
 
 ### TP 08 — Enveloppe chiffrée et authentifiée
 
