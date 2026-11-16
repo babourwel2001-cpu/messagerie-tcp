@@ -1070,12 +1070,43 @@ sur TCP, ni que les séquences empêchent le rejeu.
 
 ### TP 09 — Rejeu et cadrage TCP
 
-- [ ] Gérer les séquences indépendamment dans chaque direction.
-- [ ] Définir le traitement des sauts et du dépassement du compteur.
-- [ ] Rejeter les enveloppes rejouées.
-- [ ] Tester les enveloppes fragmentées et regroupées.
+- [x] Gérer les séquences indépendamment dans chaque direction.
+- [x] Définir le traitement des sauts et du dépassement du compteur.
+- [x] Rejeter les enveloppes rejouées.
+- [x] Tester les enveloppes fragmentées et regroupées.
 - [ ] Limiter les tailles et le tampon de réception.
 - [ ] Vérifier qu’un rejet ne déclenche aucune commande métier.
+
+La gestion des séquences est implémentée dans `creerSequence()`
+de `src/common/crypto.js`.
+
+Chaque direction de communication possède son propre compteur.
+La première séquence attendue est 1.
+
+Une enveloppe est acceptée uniquement si sa séquence est
+exactement égale à la séquence attendue.
+
+Sont donc rejetés :
+
+- une séquence déjà utilisée ;
+- une séquence plus ancienne ;
+- une séquence qui saute un ou plusieurs compteurs ;
+- une séquence invalide ;
+- une séquence au-delà du compteur maximal.
+
+Fichier de tests : `test/sequence.test.js`.
+
+Commande :
+
+```bash
+node --test test/sequence.test.js
+```
+
+Résultat observé : 8 tests exécutés, 8 réussis, 0 échec.
+
+Ces tests valident la logique locale des séquences.
+Ils ne prouvent pas encore que le client et le serveur
+utilisent ces compteurs lors d’un échange TCP réel.
 
 ### Intégration et analyse
 

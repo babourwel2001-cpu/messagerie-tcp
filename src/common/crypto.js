@@ -14,6 +14,7 @@ const ENVELOPE_VERSION = 1;
 const IV_BYTES = 16;
 const MAC_BYTES = 32;
 const MAX_ENVELOPE_BYTES = 16384;
+const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
 
 function decodeBase64Strict(value, expectedBytes) {
   const expectedCharacters = 4 * Math.ceil(expectedBytes / 3);
@@ -354,6 +355,54 @@ function ouvrirEnveloppe(
   return message.toString("utf8");
 }
 
+// Crée un compteur de séquence pour une direction de communication.
+// La première séquence attendue est 1.
+// Le paramètre sequenceInitiale sert uniquement aux tests
+// du dépassement du compteur.
+function creerSequence(sequenceInitiale = 1) {
+  if (
+    !Number.isInteger(sequenceInitiale) ||
+    sequenceInitiale < 1 ||
+    sequenceInitiale > MAX_SEQUENCE
+  ) {
+    throw new Error("Séquence initiale invalide.");
+  }
+
+  let attendue = sequenceInitiale;
+
+  return {
+    // Retourne la prochaine séquence à utiliser.
+    prochaine() {
+      if (attendue > MAX_SEQUENCE) {
+        throw new Error("Séquence épuisée.");
+      }
+
+      return attendue;
+    },
+
+    // Vérifie la séquence reçue et avance le compteur.
+    verifier(sequence) {
+      if (
+        !Number.isInteger(sequence) ||
+        sequence < 1 ||
+        sequence > MAX_SEQUENCE
+      ) {
+        throw new Error("Séquence invalide.");
+      }
+
+      if (sequence !== attendue) {
+        throw new Error("Séquence invalide.");
+      }
+
+      if (attendue === MAX_SEQUENCE) {
+        attendue = MAX_SEQUENCE + 1;
+        return;
+      }
+
+      attendue += 1;
+    },
+  };
+}
 module.exports = {
   CURVE,
   PUBLIC_KEY_BYTES,
@@ -368,4 +417,6 @@ module.exports = {
   deriverClesSession,
   creerEnveloppe,
   ouvrirEnveloppe,
+  MAX_SEQUENCE,
+  creerSequence,
 };
