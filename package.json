@@ -4,7 +4,8 @@
   "type": "commonjs",
   "scripts": {
     "server": "node src/server/server.js",
-    "client": "node src/client/client.js"
+    "client": "node src/client/client.js",
+    "test": "node --test test/"
   },
   "dependencies": {
     "kleur": "^4.1.5",

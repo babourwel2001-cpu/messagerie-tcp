@@ -58,7 +58,6 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 const client = new net.Socket();
 const MAX_MESSAGE_BYTES = 8192;
 
-
 // Tampon pour les données TCP reçues en plusieurs morceaux.
 let pending = Buffer.alloc(0);
 
@@ -71,6 +70,10 @@ let serverNonce = null;
 
 // Clés dérivées avec HKDF.
 let clesSession = null;
+
+// Séquences indépendantes dans chaque direction.
+let sequenceClient = null;
+let sequenceServeur = null;
 
 let delaiNegociation = null;
 
@@ -89,13 +92,27 @@ function nettoyerNegociation() {
     clesSession = null;
   }
 
+  sequenceClient = null;
+  sequenceServeur = null;
   echange = null;
   clientNonce = null;
   serverNonce = null;
-  pending = "";
+  pending = Buffer.alloc(0);
   etatNegociation = "ferme";
 }
 
+// Chiffre et authentifie un message applicatif avant l'envoi.
+function envoyerProtege(message) {
+  const enveloppe = creerEnveloppe(
+    clesSession,
+    name,
+    "server",
+    sequenceClient.prochaine(),
+    JSON.stringify(message),
+  );
+
+  client.write(encoderEnveloppe(enveloppe));
+}
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -103,13 +120,36 @@ const rl = readline.createInterface({
   prompt: ">",
 });
 
-
 const {
   createKeyExchange,
   deriverClesSession,
+  creerEnveloppe,
+  ouvrirEnveloppe,
+  creerSequence,
   encoderEnveloppe,
   extraireEnveloppes,
 } = require("../common/crypto");
+
+// Séquence locale, propre à une direction et à une connexion.
+function creerCompteurSequence() {
+  let valeur = 0;
+
+  return {
+    prochaine() {
+      valeur += 1;
+      return valeur;
+    },
+    verifier(sequence) {
+      if (sequence !== valeur + 1) {
+        throw new Error(
+          `Séquence invalide : attendu ${valeur + 1}, reçu ${sequence}`,
+        );
+      }
+
+      valeur += 1;
+    },
+  };
+}
 
 const {
   validateServerKey,
@@ -138,14 +178,16 @@ client.on("connect", () => {
     client.write(encoderEnveloppe(message));
 
     console.log("Clé publique envoyée. Attente du serveur...");
-  } catch {
-    console.error(kleur.red("Échec de la négociation."));
+  } catch (error) {
+    console.error(
+      kleur.red(`Échec de la négociation : ${error.message}`),
+    );
+
     client.destroy();
   }
 });
 
-
-// Réception, cadrage et traitement des messages JSON.
+// Réception, cadrage et traitement des messages protégés.
 client.on("data", (chunk) => {
   try {
     pending = Buffer.concat([pending, chunk]);
@@ -154,54 +196,166 @@ client.on("data", (chunk) => {
 
     pending = resultat.reste;
 
-    for (const message of resultat.enveloppes) {
-      if (etatNegociation !== "attente-cle") {
+    for (const enveloppe of resultat.enveloppes) {
+      if (etatNegociation === "attente-cle") {
+        try {
+          const donnees = validateServerKey(enveloppe);
+
+          serverNonce = donnees.nonce;
+
+          secretPartage = echange.computeSecret(
+            donnees.publicKey.toString("base64"),
+          );
+
+          clesSession = deriverClesSession(
+            secretPartage,
+            clientNonce,
+            serverNonce,
+          );
+
+          secretPartage.fill(0);
+          secretPartage = null;
+
+          etatNegociation = "canal-actif";
+          clearTimeout(delaiNegociation);
+          echange = null;
+
+          sequenceClient = creerCompteurSequence();
+          sequenceServeur = creerCompteurSequence();
+
+          envoyerProtege(
+            buildClientHello(name),
+          );
+        } catch (error) {
+          console.error(
+            kleur.red(`Échec de la négociation : ${error.message}`),
+          );
+
+          client.destroy();
+          return;
+        }
+
+        continue;
+      }
+
+      if (etatNegociation !== "canal-actif") {
         console.error(kleur.red("Message inattendu."));
         client.destroy();
         return;
       }
 
       try {
-        const donnees = validateServerKey(message);
+        sequenceServeur.verifier(enveloppe.sequence);
 
-        serverNonce = donnees.nonce;
-
-        secretPartage = echange.computeSecret(
-          donnees.publicKey.toString("base64"),
+        const message = JSON.parse(
+          ouvrirEnveloppe(clesSession, enveloppe),
         );
 
-        clesSession = deriverClesSession(
-          secretPartage,
-          clientNonce,
-          serverNonce,
-        );
 
-        secretPartage.fill(0);
-        secretPartage = null;
+        if (message.action === "server-hello") {
+          console.log(kleur.green(message.msg));
+        } else if (message.action === "server-error") {
+          console.error(kleur.red(message.msg));
+        } else if (message.action === "server-message") {
+          console.log(
+            kleur.cyan(`[Privé] <${message.sender}> ${message.msg}`),
+          );
+        } else if (message.action === "server-broadcast") {
+          console.log(
+            kleur.yellow(`[À tous] <${message.sender}> ${message.msg}`),
+          );
+        } else if (message.action === "server-clients") {
+          console.log(
+            kleur.blue("Utilisateurs connectés :"),
+            message.clients.join(", "),
+          );
+        } else if (message.action === "server-goodbye") {
+          console.log(kleur.green(message.msg));
+          client.end();
+        } else if (message.action === "server-group-created") {
+          console.log(kleur.green(message.msg));
+        } else if (message.action === "server-groups") {
+          console.log(
+            kleur.blue("Groupes disponibles :"),
+            message.groups.join(", "),
+          );
+        } else if (message.action === "server-group-joined") {
+          console.log(kleur.green(message.msg));
+        } else if (message.action === "server-group-left") {
+          console.log(kleur.yellow(message.msg));
+        } else if (message.action === "server-members") {
+          console.log(
+            kleur.blue(`Membres de ${message.group} :`),
+            message.members.join(", "),
+          );
+        } else if (message.action === "server-group-message") {
+          console.log(
+            kleur.cyan(
+              `[${message.group}] <${message.sender}> ${message.msg}`,
+            ),
+          );
+        } else if (message.action === "server-group-messages") {
+          console.log(kleur.blue(`Historique de ${message.group} :`));
 
-        etatNegociation = "ecdh-termine";
-        clearTimeout(delaiNegociation);
-        echange = null;
+          for (const item of message.messages) {
+            const date = item.date || "date inconnue";
 
-        console.log(
-          kleur.green(
-            "ECDH et HKDF terminés : clés de session calculées.",
+            console.log(
+              kleur.cyan(`[${date}] <${item.sender}> ${item.msg}`),
+            );
+          }
+        } else if (message.action === "server-group-invited") {
+          console.log(kleur.green(message.msg));
+        } else if (message.action === "server-group-invitation") {
+          console.log(kleur.magenta(message.msg));
+        } else if (message.action === "server-group-kicked") {
+          console.log(kleur.yellow(message.msg));
+        } else if (message.action === "server-group-banned") {
+          console.log(kleur.red(message.msg));
+        } else if (message.action === "server-group-unbanned") {
+          console.log(kleur.green(message.msg));
+        } else if (message.action === "server-group-states") {
+          console.log(kleur.blue(`Événements de ${message.group} :`));
+
+          for (const event of message.states) {
+            const destination = event.details.dest
+              ? ` (${event.details.dest})`
+              : "";
+            const reason = event.details.reason
+              ? ` - ${event.details.reason}`
+              : "";
+
+            console.log(
+              kleur.yellow(
+                `[${event.timestamp}] ${event.actor} -> ${event.type}${destination}${reason}`,
+              ),
+            );
+          }
+        } else {
+          console.error(
+            kleur.red(`Action serveur inconnue : ${message.action}`),
+          );
+        }
+      } catch (error) {
+        console.error(
+          kleur.red(
+            `Message protégé invalide : ${error.message}`,
           ),
         );
 
-        console.log(
-          "Le canal chiffré n'est pas encore disponible. Tape q pour fermer.",
-        );
-
-        rl.prompt();
-      } catch {
-        console.error(kleur.red("Échec de la négociation."));
         client.destroy();
         return;
       }
+
+      rl.prompt();
     }
-  } catch {
-    console.error(kleur.red("Message ou cadrage invalide."));
+  } catch (error) {
+    console.error(
+      kleur.red(
+        `Message ou cadrage invalide : ${error.message}`,
+      ),
+    );
+
     client.destroy();
   }
 });
@@ -217,17 +371,187 @@ client.on("close", () => {
   nettoyerNegociation();
 });
 
-// Commandes bloquées avant l'intégration du canal protégé.
+// Commandes envoyées dans une enveloppe chiffrée et authentifiée.
 rl.on("line", (line) => {
   if (line.trim() === "q") {
+    envoyerProtege(
+      buildClientQuit(name),
+    );
+
     client.end();
     rl.close();
     return;
   }
 
-  console.log(
-    "Commandes indisponibles : chiffrement et intégrité non encore intégrés.",
-  );
+  if (etatNegociation !== "canal-actif") {
+    console.log(
+      "Le canal protégé n'est pas encore disponible.",
+    );
+
+    rl.prompt();
+    return;
+  }
+
+  const command = line.trim();
+
+  if (command === "") {
+    rl.prompt();
+    return;
+  }
+
+  const parts = line.split(";");
+
+  if (parts[0] === "s") {
+    const destination = parts[1]?.trim();
+    const text = parts.slice(2).join(";").trim();
+
+    if (!destination || !text) {
+      console.log("Usage : s;destinataire;message");
+    } else {
+      envoyerProtege(
+        buildClientSend(name, destination, text),
+      );
+    }
+  } else if (parts[0] === "b") {
+    const text = parts.slice(1).join(";").trim();
+
+    if (!text) {
+      console.log("Usage : b;message");
+    } else {
+      envoyerProtege(
+        buildClientBroadcast(name, text),
+      );
+    }
+  } else if (parts[0] === "ls") {
+    envoyerProtege(
+      buildClientListClients(name),
+    );
+  } else if (parts[0] === "cg") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : cg;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientCreateGroup(name, groupName),
+      );
+    }
+  } else if (parts[0] === "groups") {
+    envoyerProtege(
+      buildClientListGroups(name),
+    );
+  } else if (parts[0] === "j") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : j;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientJoinGroup(name, groupName),
+      );
+    }
+  } else if (parts[0] === "members") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : members;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientListMembers(name, groupName),
+      );
+    }
+  } else if (parts[0] === "leave") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : leave;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientLeaveGroup(name, groupName),
+      );
+    }
+  } else if (parts[0] === "bg") {
+    const groupName = parts[1]?.trim();
+    const text = parts.slice(2).join(";").trim();
+
+    if (!groupName || !text) {
+      console.log("Usage : bg;nom_du_groupe;message");
+    } else {
+      envoyerProtege(
+        buildClientGroupBroadcast(name, groupName, text),
+      );
+    }
+  } else if (parts[0] === "messages") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : messages;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientListGroupMessages(name, groupName),
+      );
+    }
+  } else if (parts[0] === "invite") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+
+    if (!groupName || !destination) {
+      console.log("Usage : invite;nom_du_groupe;utilisateur");
+    } else {
+      envoyerProtege(
+        buildClientInvite(name, groupName, destination),
+      );
+    }
+  } else if (parts[0] === "kick") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+    const reason = parts.slice(3).join(";").trim() || "aucune raison";
+
+    if (!groupName || !destination) {
+      console.log("Usage : kick;groupe;utilisateur;raison");
+    } else {
+      envoyerProtege(
+        buildClientKick(name, groupName, destination, reason),
+      );
+    }
+  } else if (parts[0] === "ban") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+    const reason = parts.slice(3).join(";").trim() || "aucune raison";
+
+    if (!groupName || !destination) {
+      console.log("Usage : ban;groupe;utilisateur;raison");
+    } else {
+      envoyerProtege(
+        buildClientBan(name, groupName, destination, reason),
+      );
+    }
+  } else if (parts[0] === "unban") {
+    const groupName = parts[1]?.trim();
+    const destination = parts[2]?.trim();
+
+    if (!groupName || !destination) {
+      console.log("Usage : unban;groupe;utilisateur");
+    } else {
+      envoyerProtege(
+        buildClientUnban(name, groupName, destination),
+      );
+    }
+  } else if (parts[0] === "states") {
+    const groupName = parts[1]?.trim();
+
+    if (!groupName) {
+      console.log("Usage : states;nom_du_groupe");
+    } else {
+      envoyerProtege(
+        buildClientListGroupStates(name, groupName),
+      );
+    }
+  } else {
+    console.log(
+      "Commande inconnue. Utilisez s;destinataire;message, b;message, ls, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",
+    );
+  }
 
   rl.prompt();
 });

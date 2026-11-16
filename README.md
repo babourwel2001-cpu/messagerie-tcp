@@ -1165,3 +1165,150 @@ Avant l’intégration et les tests croisés, documenter :
 Les paramètres déjà imposés par le sujet doivent être conservés.
 Les choix complémentaires ne doivent pas être décidés
 unilatéralement avant un test croisé.
+
+---
+
+
+## 21. TP 10 - Intégration de la messagerie au canal protégé
+
+### Objectif
+
+Intégrer les commandes de messagerie au canal chiffré et authentifié
+établi après la négociation ECDH et la dérivation HKDF.
+
+
+### Fonctionnement réalisé
+
+Après la réception de `server-key`, le client et le serveur dérivent
+leurs clés de session avec HKDF.
+
+Le client envoie ensuite `client-hello` dans une enveloppe protégée.
+Le serveur vérifie la séquence, le HMAC et déchiffre le message
+avant de traiter la présentation.
+
+Une fois le client enregistré, toutes les commandes métier sont
+envoyées et reçues dans des enveloppes protégées.
+
+
+### Séquences
+
+Chaque connexion possède deux compteurs indépendants :
+
+- `sequenceClient` : client vers serveur ;
+- `sequenceServeur` : serveur vers client.
+
+La première séquence attendue est 1.
+
+Le serveur rejette une enveloppe dont la séquence n’est pas
+exactement la séquence attendue. Cela empêche le rejeu,
+les sauts de séquence et l’utilisation d’une séquence ancienne.
+
+
+### Commandes protégées
+
+Les commandes suivantes sont désormais transmises dans le canal
+chiffré et authentifié :
+
+- `ls` ;
+- `s;destinataire;message` ;
+- `b;message` ;
+- `cg;groupe` ;
+- `groups` ;
+- `j;groupe` ;
+- `members;groupe` ;
+- `leave;groupe` ;
+- `bg;groupe;message` ;
+- `messages;groupe` ;
+- `invite;groupe;utilisateur` ;
+- `kick;groupe;utilisateur;raison` ;
+- `ban;groupe;utilisateur;raison` ;
+- `unban;groupe;utilisateur` ;
+- `states;groupe` ;
+- `q`.
+
+
+### Validation manuelle
+
+Le serveur a été lancé avec :
+
+```bash
+npm run server
+```
+
+Alice et Bob ont été lancés avec :
+
+```bash
+npm run client -- --name alice
+npm run client -- --name bob
+```
+
+La commande suivante a été testée depuis Alice :
+
+```text
+ls
+```
+
+Résultat observé côté Alice :
+
+```text
+Utilisateurs connectés :
+alice, bob
+```
+
+Résultat observé côté serveur :
+
+```text
+Action reçue de alice : client-list-clients
+```
+
+Les messages privés, la diffusion générale et les commandes de groupe
+ont également été vérifiés sur le canal protégé.
+
+
+### Erreur rencontrée et corrigée
+
+Lors des premiers essais, la commande `ls` provoquait la déconnexion
+immédiate du client.
+
+Deux causes ont été identifiées :
+
+- les commandes métier étaient imbriquées dans le traitement
+  de `client-hello` côté serveur ;
+- le client fermait la connexion lorsqu’il recevait une réponse
+  `server-clients`, car cette action était considérée comme inattendue.
+
+Après séparation du traitement de `client-hello` et des commandes
+métier, puis correction de la gestion des réponses côté client,
+la commande `ls` fonctionne correctement.
+
+Une erreur `Séquence invalide` a également été observée lors de
+l’envoi d’une deuxième commande. Elle a été corrigée en utilisant
+des compteurs de séquence locaux, propres à chaque connexion
+et à chaque direction.
+
+
+### Tests automatisés
+
+La suite complète a été exécutée avec :
+
+```bash
+npm test
+```
+
+Résultat observé le 16 novembre 2026 :
+
+| Indicateur | Valeur |
+|---|---:|
+| Tests exécutés | 62 |
+| Tests réussis | 62 |
+| Tests échoués | 0 |
+
+
+### Limites actuelles
+
+L’intégration protège les échanges après la négociation, mais :
+
+- l’identité du serveur n’est pas encore authentifiée ;
+- l’attaque de l’homme du milieu reste possible ;
+- l’authentification par mot de passe n’est pas encore intégrée ;
+- les comptes et l’historique ne sont pas encore persistés.
