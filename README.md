@@ -1142,12 +1142,14 @@ chiffré et authentifié n’est pas intégré à la messagerie.
 
 ### Intégration et analyse
 
-- [ ] TP 10 : intégrer l’authentification et la messagerie
+- [x] TP 10 : intégrer l’authentification et la messagerie
       au canal protégé.
-- [ ] Rejouer les scénarios des parties précédentes.
-- [ ] Comparer les captures réseau avant et après protection.
-- [ ] TP 11 : expliquer l’attaque de l’homme du milieu.
-- [ ] Décrire une évolution vers TLS avec validation du serveur.
+- [x] Rejouer les scénarios des parties précédentes.
+- [x] Comparer les captures réseau avant et après protection.
+- [x] TP 11 : expliquer l’attaque de l’homme du milieu.
+- [x] Implémenter une variante TLS de la messagerie.
+- [x] Valider la confidentialité des échanges TLS par capture réseau.
+- [x] Décrire une évolution vers TLS avec validation du serveur.
 
 ### Points de contrat à préciser
 
@@ -1312,3 +1314,516 @@ L’intégration protège les échanges après la négociation, mais :
 - l’attaque de l’homme du milieu reste possible ;
 - l’authentification par mot de passe n’est pas encore intégrée ;
 - les comptes et l’historique ne sont pas encore persistés.
+
+---
+
+
+## 22. TP 10 - Observation réseau du canal protégé
+
+### Objectif
+
+Vérifier que les messages de la messagerie ne sont plus transmis
+en clair après la négociation ECDH et la dérivation HKDF.
+
+La capture réseau permet d’observer les paquets TCP échangés entre
+le client et le serveur, puis de vérifier que le contenu des messages
+n’apparaît pas en texte lisible.
+
+
+### Outil utilisé
+
+La capture a été réalisée avec `tshark`, l’outil en ligne de commande
+de Wireshark.
+
+
+### Préparation
+
+Fermer le serveur et les clients avant de démarrer la capture.
+
+
+### Démarrer la capture
+
+Dans un premier terminal, lancer la capture sur l’interface de
+bouclage local et filtrer le port 8080 :
+
+```bash
+sudo tshark -i lo -f "port 8080" -w /tmp/capture-partie3.pcap
+```
+
+La capture est enregistrée dans :
+
+```text
+/tmp/capture-partie3.pcap
+```
+
+Laisser cette commande active pendant le test.
+
+
+### Lancer le serveur et les clients
+
+Dans un deuxième terminal, lancer le serveur :
+
+```bash
+npm run server
+```
+
+Dans un troisième terminal, lancer Alice :
+
+```bash
+npm run client -- --name alice
+```
+
+Dans un quatrième terminal, lancer Bob :
+
+```bash
+npm run client -- --name bob
+```
+
+
+### Effectuer un test
+
+Depuis Alice, envoyer une commande de liste puis un message privé :
+
+```text
+ls
+s;bob;message secret
+```
+
+Bob doit recevoir le message privé :
+
+```text
+[Privé] <alice> message secret
+```
+
+
+### Arrêter la capture
+
+Dans le terminal de `tshark`, arrêter la capture avec :
+
+```text
+Ctrl+C
+```
+
+
+### Vérifier les paquets capturés
+
+Afficher les paquets TCP liés au port 8080 :
+
+```bash
+tshark -r /tmp/capture-partie3.pcap -Y "tcp.port == 8080" | head -n 20
+```
+
+La capture doit contenir :
+
+- les connexions TCP des clients vers le serveur ;
+- les échanges de négociation ECDH ;
+- les enveloppes chiffrées et authentifiées ;
+- les réponses du serveur.
+
+
+### Vérifier l’absence du message en clair
+
+Rechercher le texte du message dans la capture :
+
+```bash
+strings /tmp/capture-partie3.pcap | grep -F "message secret"
+```
+
+Résultat attendu :
+
+```text
+Aucune sortie
+```
+
+Le texte `message secret` ne doit pas apparaître dans la capture.
+
+
+### Résultat observé
+
+La capture contient bien les connexions des clients Alice et Bob
+vers le serveur sur le port 8080.
+
+Les échanges après la négociation apparaissent sous forme de
+données binaires dans les paquets TCP.
+
+La recherche du texte `message secret` ne renvoie aucun résultat.
+Le contenu applicatif des messages n’apparaît donc pas en clair
+dans le trafic réseau.
+
+Cette observation confirme que les messages transmis après la
+négociation sont protégés par le canal chiffré et authentifié.
+
+
+### Limites de l’observation
+
+Cette capture démontre que le texte du message n’est pas visible
+en clair dans le trafic TCP.
+
+Elle ne prouve pas à elle seule que le serveur est authentifié.
+Une attaque de l’homme du milieu reste possible sans validation
+de l’identité du serveur.
+
+Cette limite est analysée dans le TP 11.
+
+---
+
+
+---
+
+
+## 23. TP 11 - Homme du milieu et évolution vers TLS
+
+### Objectif
+
+Analyser la principale limite de la négociation ECDH actuelle :
+l’absence d’authentification du serveur.
+
+Le canal chiffré et authentifié protège les messages après la
+négociation, mais il ne prouve pas encore que le client communique
+avec le serveur légitime.
+
+
+### Fonctionnement actuel
+
+Le client et le serveur échangent leurs clés publiques ECDH.
+
+Chaque participant calcule ensuite le même secret partagé à partir
+de sa clé privée et de la clé publique de l’autre participant.
+
+Ce secret est utilisé pour dériver deux clés de session avec HKDF :
+
+- une clé de chiffrement AES ;
+- une clé d’authentification HMAC.
+
+Les messages applicatifs sont ensuite transmis dans des enveloppes
+chiffrées avec AES-256-CBC et authentifiées avec HMAC-SHA-256.
+
+
+### Attaque de l’homme du milieu
+
+Un attaquant peut se placer entre le client et le serveur.
+
+Lors de la négociation, il intercepte la clé publique du serveur
+et l’envoie au client. Il intercepte également la clé publique
+du client et l’envoie au serveur.
+
+L’attaquant établit alors deux négociations distinctes :
+
+- une négociation avec le client ;
+- une négociation avec le serveur.
+
+Le client calcule un secret partagé avec l’attaquant.
+Le serveur calcule également un secret partagé avec l’attaquant.
+
+Le client croit parler au serveur, alors qu’il parle à l’attaquant.
+Le serveur croit parler au client, alors qu’il parle à l’attaquant.
+
+L’attaquant peut donc :
+
+- déchiffrer les messages du client ;
+- lire leur contenu ;
+- les modifier ;
+- les rechiffrer pour le serveur ;
+- faire la même opération dans l’autre sens.
+
+Le client et le serveur ne peuvent pas détecter cette attaque
+lors de la négociation, car ils n’ont aucun moyen de vérifier
+l’identité de leur interlocuteur.
+
+
+### Pourquoi la capture réseau ne suffit pas
+
+La capture réalisée avec `tshark` montre que le texte du message
+n’apparaît pas en clair dans le trafic TCP.
+
+Cela prouve que les messages sont chiffrés après la négociation.
+Cela ne prouve pas que le client communique réellement avec le
+serveur légitime.
+
+Un attaquant peut également proposer une clé publique ECDH et
+établir un canal chiffré avec le client. Le trafic restera chiffré,
+mais il sera chiffré entre le client et l’attaquant.
+
+
+### Rôle de l’authentification du serveur
+
+Pour empêcher cette attaque, le client doit pouvoir vérifier
+l’identité du serveur avant d’établir le canal sécurisé.
+
+Le serveur doit posséder un certificat contenant :
+
+- son identité ;
+- sa clé publique ;
+- la signature d’une autorité de certification.
+
+Le client vérifie que le certificat est valide et qu’il correspond
+bien au serveur auquel il souhaite se connecter.
+
+Le serveur prouve ensuite qu’il possède la clé privée associée
+au certificat.
+
+
+### Évolution vers TLS
+
+TLS résout ce problème en associant l’échange de clés à une
+authentification du serveur.
+
+Le fonctionnement souhaité est le suivant :
+
+1. le client se connecte au serveur ;
+2. le serveur présente son certificat ;
+3. le client vérifie le certificat et l’identité du serveur ;
+4. le serveur prouve qu’il possède la clé privée du certificat ;
+5. le client et le serveur établissent une clé de session ;
+6. les messages sont chiffrés et authentifiés.
+
+Avec TLS, un attaquant ne peut pas se faire passer pour le serveur
+sans posséder la clé privée correspondant au certificat du serveur.
+
+
+### Comparaison avec l’implémentation actuelle
+
+| Élément | Implémentation actuelle | TLS |
+|---|---|---|
+| Échange de clés | ECDH | ECDHE ou autre mécanisme TLS |
+| Secret partagé | Oui | Oui |
+| Chiffrement des messages | AES-256-CBC | AES-GCM ou autre suite TLS |
+| Intégrité des messages | HMAC-SHA-256 | Tag d’authentification de la suite TLS |
+| Protection contre le rejeu | Séquences par direction | Numéros de séquence TLS |
+| Identité du serveur | Non vérifiée | Certificat vérifié |
+| Protection contre l’homme du milieu | Non | Oui, si le certificat est valide |
+
+
+### Travaux réalisés
+
+- [x] Expliquer le scénario d’attaque de l’homme du milieu.
+- [x] Comparer la négociation actuelle avec TLS.
+- [x] Décrire le rôle du certificat et de l’autorité de certification.
+- [x] Proposer une évolution vers TLS avec validation du serveur.
+
+
+### Limites restantes
+
+L’implémentation actuelle ne valide pas l’identité du serveur.
+Une attaque de l’homme du milieu reste donc possible.
+
+L’authentification des utilisateurs, la persistance des comptes
+et l’historique persistant relèvent de la branche
+`partie3-comptes`.
+
+---
+
+
+## 24. TP 11 — Implémentation et validation de TLS
+
+### Objectif
+
+Ajouter une variante de la messagerie utilisant TLS afin de protéger
+les échanges réseau et d’authentifier l’identité du serveur.
+
+La variante TLS est séparée de l’implémentation ECDH, HKDF,
+AES-256-CBC et HMAC-SHA-256. Elle permet de comparer les deux
+approches sans modifier la messagerie déjà fonctionnelle.
+
+
+### Fichiers ajoutés
+
+| Fichier | Rôle |
+|---|---|
+| `src/server/server-tls.js` | Serveur TLS de la messagerie |
+| `src/client/client-tls.js` | Client TLS de la messagerie |
+| `certs/server-key.pem` | Clé privée du serveur |
+| `certs/server-cert.pem` | Certificat auto-signé du serveur |
+
+
+### Fonctionnement de TLS
+
+TLS remplace les mécanismes de sécurité implémentés manuellement
+dans la première variante :
+
+| Élément | Implémentation ECDH maison | Implémentation TLS |
+|---|---|---|
+| Transport | TCP brut | TLS sur TCP |
+| Échange de clés | ECDH | Négociation TLS |
+| Dérivation des clés | HKDF-SHA-256 | Dérivation de clés TLS |
+| Chiffrement | AES-256-CBC | Chiffrement négocié par TLS |
+| Intégrité | HMAC-SHA-256 | Authentification TLS |
+| Protection contre le rejeu | Séquences applicatives | Séquences TLS |
+| Identité du serveur | Non vérifiée | Certificat vérifié |
+| Protection contre l’homme du milieu | Non | Oui |
+
+
+### Certificat du serveur
+
+Un certificat auto-signé a été créé pour les tests locaux.
+
+Commande utilisée :
+
+```bash
+openssl req -x509 -newkey rsa:2048 -sha256 -days 365 \
+  -nodes -keyout certs/server-key.pem \
+  -out certs/server-cert.pem \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+```
+
+Le certificat contient :
+
+- le nom `localhost` ;
+- l’adresse IP `127.0.0.1` ;
+- la clé publique du serveur ;
+- la signature du certificat.
+
+La clé privée du serveur n’est jamais transmise sur le réseau.
+
+
+### Vérification du certificat
+
+Le client TLS vérifie le certificat du serveur avec :
+
+```js
+rejectUnauthorized: true
+```
+
+Il fournit également le certificat du serveur comme autorité
+de confiance :
+
+```js
+ca: fs.readFileSync("certs/server-cert.pem")
+```
+
+Ainsi, le client vérifie que le serveur possède bien le certificat
+attendu avant d’établir la session TLS.
+
+Un attaquant ne peut pas se faire passer pour le serveur sans
+posséder la clé privée correspondant au certificat.
+
+
+### Protocole applicatif
+
+Le protocole applicatif reste identique à celui de la messagerie.
+
+Les commandes et les réponses sont envoyées en JSON, avec une
+commande par ligne :
+
+```text
+{"action":"client-hello","sender":"alice"}\n
+```
+
+TLS chiffre et authentifie l’ensemble de ces échanges.
+
+
+### Scripts npm
+
+Les scripts suivants ont été ajoutés à `package.json` :
+
+```json
+"server:tls": "node src/server/server-tls.js",
+"client:tls": "node src/client/client-tls.js"
+```
+
+### Lancement
+
+Dans un premier terminal :
+
+```bash
+npm run server:tls
+```
+
+Dans un deuxième terminal :
+
+```bash
+npm run client:tls -- --name alice
+```
+
+Dans un troisième terminal :
+
+```bash
+npm run client:tls -- --name bob
+```
+
+
+### Test réalisé
+
+Depuis Alice :
+
+```text
+ls
+s;bob;message secret TLS
+```
+
+Bob reçoit le message privé :
+
+```text
+[Privé] <alice> message secret TLS
+```
+
+La commande `ls` affiche également les utilisateurs connectés.
+
+
+### Observation réseau
+
+Une capture TCP a été réalisée avec `tshark` sur l’interface de
+bouclage local, en filtrant le port 8443.
+
+Commande de capture :
+
+```bash
+sudo tshark -i lo -f "port 8443" -w /tmp/capture-tls.pcap
+```
+
+Affichage des paquets capturés :
+
+```bash
+tshark -r /tmp/capture-tls.pcap -Y "tcp.port == 8443" | head -n 20
+```
+
+La capture montre :
+
+- les connexions TCP des clients vers le serveur ;
+- un `Client Hello` avec le nom `localhost` ;
+- des enregistrements `TLSv1.3 Application Data` ;
+- les échanges chiffrés entre le client et le serveur.
+
+
+### Vérification de la confidentialité
+
+Recherche du texte du message dans la capture :
+
+```bash
+strings /tmp/capture-tls.pcap | grep -F "message secret TLS"
+```
+
+Résultat observé :
+
+```text
+Aucune sortie
+```
+
+Le texte `message secret TLS` n’apparaît donc pas en clair dans
+la capture réseau.
+
+
+### Résultat observé
+
+La capture confirme que :
+
+- les clients établissent une session TLS avec le serveur ;
+- les commandes et les messages sont transmis dans des
+  enregistrements `TLSv1.3 Application Data` ;
+- le contenu applicatif n’apparaît pas en clair dans le trafic ;
+- le client vérifie l’identité du serveur grâce au certificat.
+
+TLS protège donc à la fois la confidentialité, l’intégrité
+et l’authentification du serveur.
+
+
+### Limites
+
+Le certificat utilisé est auto-signé et destiné uniquement aux
+tests locaux.
+
+Dans un déploiement réel, le certificat devrait être émis par une
+autorité de certification afin que les clients puissent vérifier
+l’identité du serveur sans devoir importer manuellement son
+certificat.

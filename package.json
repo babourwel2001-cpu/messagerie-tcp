@@ -5,6 +5,8 @@
   "scripts": {
     "server": "node src/server/server.js",
     "client": "node src/client/client.js",
+    "server:tls": "node src/server/server-tls.js",
+    "client:tls": "node src/client/client-tls.js",
     "test": "node --test test/"
   },
   "dependencies": {
