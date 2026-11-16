@@ -16,12 +16,16 @@ const {
   buildServerGroupBanned,
   buildServerGroupUnbanned,
   buildServerGroupStates,
+  buildServerGoodbye,
+  buildServerKey,
+  buildServerAuthResult,
 } = require("../common/messages");
 const net = require("node:net");
+const cryptoTools = require("../common/crypto");
+const database = require("./database");
+const auth = require("./auth");
 
 const clients = new Map();
-
-//pour les groupes:création, récupération, vérification de l'appartenance et de l'interdiction
 
 const {
   createGroupForUser,
@@ -36,12 +40,14 @@ const {
   getGroupStatesForUser,
   listGroupNames,
   disconnectUserFromGroups,
-} = require("./groups"); //importation des fonctions de gestion des groupes
+} = require("./groups");
 
 
 const HOST = process.env.SERVER_HOST || "127.0.0.1";
 const PORT = Number(process.env.SERVER_PORT || "8080");
 const MAX_MESSAGE_BYTES = 8192; // Limite de taille des messages en octets
+
+const REQUIRE_AUTH = process.env.REQUIRE_AUTH === "1";
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
@@ -49,7 +55,15 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 }
 
 function send(socket, message) {
-  socket.write(JSON.stringify(message) + "\n");
+  const text = JSON.stringify(message);
+
+  socket.write((socket.channel ? socket.channel.seal(text) : text) + "\n");
+}
+
+function forLog(message) {
+  return message && message.password !== undefined
+    ? { ...message, password: "***" }
+    : message;
 }
 
 function sendError(socket, message) {
@@ -71,10 +85,114 @@ const server = net.createServer((socket) => {
   const address = `${socket.remoteAddress}:${socket.remotePort}`;
   let pending = "";
   let username = null;
+  let userId = null;
+  let state = "connected";
+  let authPending = false;
 
   console.error(`CONNECTED from ${address}`);
 
   socket.setEncoding("utf8");
+
+  function handleKeyExchange(message) {
+    if (state !== "connected") {
+      sendError(socket, "Canal sécurisé déjà établi.");
+      return;
+    }
+
+    let pair;
+    let channel;
+
+    try {
+      pair = cryptoTools.generateKeyPair();
+      channel = cryptoTools.createChannel(pair.privateKey, pair.publicKey, message.key, "server");
+    } catch {
+      sendError(socket, "Clé invalide.");
+      return;
+    }
+
+    send(socket, buildServerKey(pair.publicKey)); // dernier message en clair : socket.channel n'existe pas encore
+    socket.channel = channel;
+    state = "secure";
+  }
+
+  async function handleAuth(message) {
+    if (state === "connected") {
+      send(socket, buildServerAuthResult(false, auth.CODES.INSECURE_CHANNEL));
+      return;
+    }
+
+    if (state === "authenticated") {
+      send(socket, buildServerAuthResult(false, auth.CODES.ALREADY_AUTHENTICATED));
+      return;
+    }
+
+    if (authPending) {
+      send(socket, buildServerAuthResult(false, auth.CODES.BUSY));
+      return;
+    }
+
+    authPending = true;
+
+    let result;
+
+    try {
+      result =
+        message.action === ACTIONS.CLIENT_REGISTER
+          ? await auth.register(message.name, message.password)
+          : await auth.login(message.name, message.password);
+    } catch (error) {
+      console.error(`Erreur d'authentification : ${error.message}`); // jamais le mot de passe
+      authPending = false;
+
+      if (!socket.destroyed) send(socket, buildServerAuthResult(false, auth.CODES.SERVER_ERROR));
+
+      return;
+    }
+
+    authPending = false;
+
+    if (socket.destroyed) return;
+
+    if (result.error) {
+      send(socket, buildServerAuthResult(false, result.code));
+    } else if (message.action === ACTIONS.CLIENT_REGISTER) {
+      send(socket, buildServerAuthResult(true, result.code));
+    } else if (clients.has(result.user.name)) {
+      send(socket, buildServerAuthResult(false, auth.CODES.ALREADY_ONLINE));
+    } else {
+      state = "authenticated";
+      userId = result.user.id;
+      username = result.user.name;
+      clients.set(username, socket);
+
+      console.error(`Utilisateur authentifié : ${username}`);
+      send(socket, buildServerAuthResult(true, result.code));
+    }
+  }
+
+  function store(kind, content) {
+    if (!REQUIRE_AUTH || userId === null) return;
+
+    database
+      .addMessage(userId, kind, JSON.stringify(content))
+      .catch((error) => console.error(`Message non enregistré : ${error.message}`));
+  }
+
+  function clearSession() {
+    if (username !== null && clients.get(username) === socket) {
+      clients.delete(username);
+
+      disconnectUserFromGroups(username);
+
+      console.error(`Nom retiré : ${username}`);
+    }
+
+    username = null;
+    userId = null;
+    state = "closed";
+    authPending = false;
+    socket.channel = undefined; // les clés du canal sont oubliées
+  }
 
   socket.on("data", (chunk) => {
     pending += chunk;
@@ -82,13 +200,23 @@ const server = net.createServer((socket) => {
     let newline;
 
     while ((newline = pending.indexOf("\n")) !== -1) {
-      const line = pending.slice(0, newline);
+      let line = pending.slice(0, newline);
       pending = pending.slice(newline + 1);
 
       if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES) {
         console.error(`Message trop long from ${address}`);
         socket.destroy();
         return;
+      }
+
+      if (socket.channel) {
+        try {
+          line = socket.channel.open(line);
+        } catch {
+          console.error(`Enveloppe invalide from ${address}, connexion fermée`);
+          socket.destroy();
+          return;
+        }
       }
 
       let message;
@@ -109,7 +237,43 @@ const server = net.createServer((socket) => {
         continue;
       }
 
-      console.error(`MESSAGE from ${address}:`, message);
+      console.error(`MESSAGE from ${address}:`, forLog(message));
+
+      if (REQUIRE_AUTH) {
+        if (message.action === ACTIONS.CLIENT_KEY) {
+          handleKeyExchange(message);
+          continue;
+        }
+
+        if (
+          message.action === ACTIONS.CLIENT_REGISTER ||
+          message.action === ACTIONS.CLIENT_AUTH
+        ) {
+          handleAuth(message);
+          continue;
+        }
+
+        if (state !== "authenticated") {
+          if (message.action === ACTIONS.CLIENT_QUIT) {
+            send(socket, buildServerGoodbye("Au revoir"));
+            socket.end();
+            continue;
+          }
+
+          sendError(
+            socket,
+            state === "connected"
+              ? "Canal sécurisé obligatoire."
+              : "Authentification obligatoire.",
+          );
+          continue;
+        }
+
+        if (message.action === "client-hello") {
+          sendError(socket, "Vous êtes déjà authentifié.");
+          continue;
+        }
+      }
 
       if (message.action === "client-hello") {
         if (username !== null) {
@@ -167,6 +331,7 @@ const server = net.createServer((socket) => {
         }
 
         send(destinationSocket, buildServerMessage(username, message.msg));
+        store("private", { dest: destinationName, msg: message.msg });
 
         continue;
       }
@@ -185,6 +350,8 @@ const server = net.createServer((socket) => {
         for (const clientSocket of clients.values()) {
           send(clientSocket, broadcastMessage);
         }
+
+        store("broadcast", { msg: message.msg });
 
         continue;
       }
@@ -330,6 +497,8 @@ const server = net.createServer((socket) => {
             send(memberSocket, serverMessage);
           }
         }
+
+        store("group", { group: result.groupName, msg: result.message.msg });
 
         continue;
       }
@@ -481,18 +650,16 @@ const server = net.createServer((socket) => {
 
   socket.on("error", (error) => {
     console.error(`Socket error from ${address}: ${error.message}`);
+
+    // L'état de session est effacé aussi sur erreur ; close suivra et ne refera rien
+    clearSession();
+    socket.destroy();
   });
 
   socket.on("close", () => {
     console.error(`CLOSE ${address}, username =`, username);
 
-    if (username !== null && clients.get(username) === socket) {
-      clients.delete(username);
-
-      disconnectUserFromGroups(username);
-
-      console.error(`Nom retiré : ${username}`);
-    }
+    clearSession();
 
     console.error("Noms restants :", [...clients.keys()]);
   });
@@ -502,6 +669,18 @@ server.on("error", (error) => {
   console.error(`Server error: ${error.message}`);
 });
 
-server.listen(PORT, HOST, () => {
-  console.error(`Listening on ${HOST}:${PORT}`);
+async function start() {
+  if (REQUIRE_AUTH) await database.open(); // crée data/chat.db au premier lancement
+
+  server.listen(PORT, HOST, () => {
+    console.error(
+      `Listening on ${HOST}:${PORT}` +
+        (REQUIRE_AUTH ? " (mode sécurisé : canal chiffré + authentification)" : ""),
+    );
+  });
+}
+
+start().catch((error) => {
+  console.error(`Démarrage impossible : ${error.message}`);
+  process.exit(1);
 });

@@ -315,7 +315,50 @@ function buildServerGroupStates(group, states) {
     states,
   };
 }
+function buildClientKey(key) {
+  return {
+    action: ACTIONS.CLIENT_KEY,
+    key,
+  };
+}
+
+function buildServerKey(key) {
+  return {
+    action: ACTIONS.SERVER_KEY,
+    key,
+  };
+}
+
+function buildClientRegister(name, password) {
+  return {
+    name,
+    password,
+    action: ACTIONS.CLIENT_REGISTER,
+  };
+}
+
+function buildClientAuth(name, password) {
+  return {
+    name,
+    password,
+    action: ACTIONS.CLIENT_AUTH,
+  };
+}
+
+function buildServerAuthResult(ok, code) {
+  return {
+    action: ACTIONS.SERVER_AUTH_RESULT,
+    ok,
+    code,
+  };
+}
+
 module.exports = {
+  buildClientKey,
+  buildServerKey,
+  buildClientRegister,
+  buildClientAuth,
+  buildServerAuthResult,
   buildClientHello,
   buildServerHello,
   buildClientSend,

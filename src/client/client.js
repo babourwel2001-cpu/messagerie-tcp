@@ -17,7 +17,11 @@ const {
   buildClientBan,
   buildClientUnban,
   buildClientListGroupStates,
+  buildClientKey,
+  buildClientRegister,
+  buildClientAuth,
 } = require("../common/messages");
+const cryptoTools = require("../common/crypto");
 
 const net = require("node:net");
 const readline = require("node:readline");
@@ -48,6 +52,12 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
   process.exit(1);
 }
+
+const SECURE_CHANNEL = process.env.SECURE_CHANNEL === "1";
+let keyPair = null;
+let channel = null;
+let authenticated = !SECURE_CHANNEL;
+
 const client = new net.Socket();
 const MAX_MESSAGE_BYTES = 8192;
 let pending = "";
@@ -60,11 +70,35 @@ const rl = readline.createInterface({
   prompt: ">",
 });
 
+function writeLine(text) {
+  const clear = text.replace(/\n$/, "");
+
+  client.write((channel ? channel.seal(clear) : clear) + "\n");
+}
+
+const AUTH_MESSAGES = {
+  registered: "Compte créé. Connectez-vous avec login;mot_de_passe.",
+  authenticated: "Authentifié.",
+  "invalid-name": "Nom invalide (30 caractères max : lettres, chiffres, - ou _).",
+  "invalid-password": "Mot de passe invalide (8 caractères minimum, 72 octets maximum).",
+  "name-taken": "Ce nom est déjà utilisé.",
+  "bad-credentials": "Nom ou mot de passe invalide.",
+  "insecure-channel": "Canal non sécurisé : refusé par le serveur.",
+  "already-authenticated": "Vous êtes déjà authentifié.",
+  "already-online": "Ce compte est déjà connecté ailleurs.",
+  busy: "Une demande est déjà en cours, patientez.",
+  "server-error": "Erreur du serveur, réessayez plus tard.",
+};
+
 client.on("connect", () => {
   console.log(kleur.green("Connecté au serveur"));
 
-  // Présentation automatique auprès du serveur.
-  client.write(JSON.stringify(buildClientHello(name)) + "\n");
+  if (SECURE_CHANNEL) {
+    keyPair = cryptoTools.generateKeyPair();
+    writeLine(JSON.stringify(buildClientKey(keyPair.publicKey)) + "\n");
+  } else {
+    writeLine(JSON.stringify(buildClientHello(name)) + "\n");
+  }
 
   rl.prompt();
 });
@@ -75,7 +109,7 @@ client.on("data", (chunk) => {
   let newline;
 
   while ((newline = pending.indexOf("\n")) !== -1) {
-    const line = pending.slice(0, newline);
+    let line = pending.slice(0, newline);
     pending = pending.slice(newline + 1);
 
     if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES) {
@@ -84,10 +118,48 @@ client.on("data", (chunk) => {
       return;
     }
 
+    if (channel) {
+      try {
+        line = channel.open(line);
+      } catch {
+        console.error(kleur.red("Message du serveur illisible : connexion fermée."));
+        client.destroy();
+        return;
+      }
+    }
+
     try {
       const message = JSON.parse(line);
 
-      if (message.action === "server-hello") {
+      if (message.action === "server-key") {
+        try {
+          channel = cryptoTools.createChannel(
+            keyPair.privateKey,
+            keyPair.publicKey,
+            message.key,
+            "client",
+          );
+        } catch {
+          console.error(kleur.red("Clé du serveur invalide."));
+          client.destroy();
+          process.exitCode = 1;
+          return;
+        }
+
+        console.log(kleur.green("Canal chiffré établi."));
+        console.log(
+          kleur.blue("Utilisez register;mot_de_passe puis login;mot_de_passe (identifiant : " + name + ")."),
+        );
+      } else if (message.action === "auth-result") {
+        const text = AUTH_MESSAGES[message.code] || message.code;
+
+        if (message.ok) {
+          console.log(kleur.green(text));
+          if (message.code === "authenticated") authenticated = true;
+        } else {
+          console.error(kleur.red(text));
+        }
+      } else if (message.action === "server-hello") {
         console.log(kleur.green(message.msg));
       } else if (message.action === "server-message") {
         console.log(
@@ -200,14 +272,30 @@ rl.on("line", (line) => {
 
   const parts = line.split(";");
 
-  if (parts[0] === "s") {
+  if (SECURE_CHANNEL && !authenticated && !["register", "login", "q"].includes(parts[0])) {
+    console.log("Authentification requise : register;mot_de_passe ou login;mot_de_passe.");
+  } else if (parts[0] === "register" || parts[0] === "login") {
+    const password = parts.slice(1).join(";");
+
+    if (!SECURE_CHANNEL) {
+      console.log("Commande disponible seulement avec SECURE_CHANNEL=1.");
+    } else if (!channel) {
+      console.log("Canal chiffré pas encore établi.");
+    } else if (!password) {
+      console.log(`Usage : ${parts[0]};mot_de_passe`);
+    } else {
+      const build = parts[0] === "register" ? buildClientRegister : buildClientAuth;
+
+      writeLine(JSON.stringify(build(name, password)) + "\n");
+    }
+  } else if (parts[0] === "s") {
     const destination = parts[1]?.trim();
     const text = parts.slice(2).join(";").trim();
 
     if (!destination || !text) {
       console.log("Usage : s;destinataire;message");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientSend(name, destination, text)) + "\n",
       );
     }
@@ -217,31 +305,31 @@ rl.on("line", (line) => {
     if (!text) {
       console.log("Usage : b;message");
     } else {
-      client.write(JSON.stringify(buildClientBroadcast(name, text)) + "\n");
+      writeLine(JSON.stringify(buildClientBroadcast(name, text)) + "\n");
     }
   } else if (parts[0] === "ls") {
-    client.write(JSON.stringify(buildClientListClients(name)) + "\n");
+    writeLine(JSON.stringify(buildClientListClients(name)) + "\n");
   } else if (parts[0] === "q") {
-    client.write(JSON.stringify(buildClientQuit(name)) + "\n");
+    writeLine(JSON.stringify(buildClientQuit(name)) + "\n");
   } else if (parts[0] === "cg") {
     const groupName = parts[1]?.trim();
 
     if (!groupName) {
       console.log("Usage : cg;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientCreateGroup(name, groupName)) + "\n",
       );
     }
   } else if (parts[0] === "groups") {
-    client.write(JSON.stringify(buildClientListGroups(name)) + "\n");
+    writeLine(JSON.stringify(buildClientListGroups(name)) + "\n");
   } else if (parts[0] === "j") {
     const groupName = parts[1]?.trim();
 
     if (!groupName) {
       console.log("Usage : j;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientJoinGroup(name, groupName)) + "\n",
       );
     }
@@ -251,7 +339,7 @@ rl.on("line", (line) => {
     if (!groupName) {
       console.log("Usage : members;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientListMembers(name, groupName)) + "\n",
       );
     }
@@ -261,7 +349,7 @@ rl.on("line", (line) => {
     if (!groupName) {
       console.log("Usage : leave;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientLeaveGroup(name, groupName)) + "\n",
       );
     }
@@ -272,7 +360,7 @@ rl.on("line", (line) => {
     if (!groupName || !text) {
       console.log("Usage : bg;nom_du_groupe;message");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientGroupBroadcast(name, groupName, text)) + "\n",
       );
     }
@@ -282,7 +370,7 @@ rl.on("line", (line) => {
     if (!groupName) {
       console.log("Usage : messages;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientListGroupMessages(name, groupName)) + "\n",
       );
     }
@@ -293,7 +381,7 @@ rl.on("line", (line) => {
     if (!groupName || !destination) {
       console.log("Usage : invite;nom_du_groupe;utilisateur");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientInvite(name, groupName, destination)) + "\n",
       );
     }
@@ -305,7 +393,7 @@ rl.on("line", (line) => {
     if (!groupName || !destination) {
       console.log("Usage : kick;groupe;utilisateur;raison");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientKick(name, groupName, destination, reason)) +
         "\n",
       );
@@ -318,7 +406,7 @@ rl.on("line", (line) => {
     if (!groupName || !destination) {
       console.log("Usage : ban;groupe;utilisateur;raison");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientBan(name, groupName, destination, reason)) +
         "\n",
       );
@@ -330,7 +418,7 @@ rl.on("line", (line) => {
     if (!groupName || !destination) {
       console.log("Usage : unban;groupe;utilisateur");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientUnban(name, groupName, destination)) + "\n",
       );
     }
@@ -340,7 +428,7 @@ rl.on("line", (line) => {
     if (!groupName) {
       console.log("Usage : states;nom_du_groupe");
     } else {
-      client.write(
+      writeLine(
         JSON.stringify(buildClientListGroupStates(name, groupName)) + "\n",
       );
     }

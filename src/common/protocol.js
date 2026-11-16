@@ -37,7 +37,7 @@ const ACTIONS = {
   SERVER_GROUP_INVITED: "server-group-invited",
 
   //pour modérer les groupes
-
+  
   CLIENT_KICK: "kick",
   CLIENT_BAN: "ban",
   CLIENT_UNBAN: "unban",
@@ -48,6 +48,16 @@ const ACTIONS = {
   // pour states
   CLIENT_LIST_GROUP_STATES: "states",
   SERVER_GROUP_STATES: "server-group-states",
+
+  // pour le canal chiffré : échange de clés (seuls messages envoyés en clair), puis enveloppes
+  CLIENT_KEY: "client-key",
+  SERVER_KEY: "server-key",
+  SECURE_ENVELOPE: "secure-envelope",
+
+  // pour l'authentification (acceptée seulement sur le canal chiffré, voir PROTOCOLE-AUTH.md)
+  CLIENT_REGISTER: "register",
+  CLIENT_AUTH: "auth",
+  SERVER_AUTH_RESULT: "auth-result",
 };
 
 module.exports = { ACTIONS };
