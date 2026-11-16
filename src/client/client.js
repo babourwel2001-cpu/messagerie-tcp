@@ -58,8 +58,9 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 const client = new net.Socket();
 const MAX_MESSAGE_BYTES = 8192;
 
+
 // Tampon pour les données TCP reçues en plusieurs morceaux.
-let pending = "";
+let pending = Buffer.alloc(0);
 
 // Négociation ECDH.
 let etatNegociation = "connexion";
@@ -95,7 +96,6 @@ function nettoyerNegociation() {
   etatNegociation = "ferme";
 }
 
-client.setEncoding("utf8");
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -103,7 +103,13 @@ const rl = readline.createInterface({
   prompt: ">",
 });
 
-const { createKeyExchange, deriverClesSession } = require("../common/crypto");
+
+const {
+  createKeyExchange,
+  deriverClesSession,
+  encoderEnveloppe,
+  extraireEnveloppes,
+} = require("../common/crypto");
 
 const {
   validateServerKey,
@@ -129,7 +135,7 @@ client.on("connect", () => {
       echange.nonce,
     );
 
-    client.write(JSON.stringify(message) + "\n");
+    client.write(encoderEnveloppe(message));
 
     console.log("Clé publique envoyée. Attente du serveur...");
   } catch {
@@ -138,25 +144,17 @@ client.on("connect", () => {
   }
 });
 
-// Réception et découpage des messages JSON terminés par \n.
+
+// Réception, cadrage et traitement des messages JSON.
 client.on("data", (chunk) => {
-  pending += chunk;
+  try {
+    pending = Buffer.concat([pending, chunk]);
 
-  let newline;
+    const resultat = extraireEnveloppes(pending);
 
-  while ((newline = pending.indexOf("\n")) !== -1) {
-    const line = pending.slice(0, newline);
-    pending = pending.slice(newline + 1);
+    pending = resultat.reste;
 
-    if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES) {
-      console.error(kleur.red("Réponse trop longue."));
-      client.destroy();
-      return;
-    }
-
-    try {
-      const message = JSON.parse(line);
-
+    for (const message of resultat.enveloppes) {
       if (etatNegociation !== "attente-cle") {
         console.error(kleur.red("Message inattendu."));
         client.destroy();
@@ -164,25 +162,20 @@ client.on("data", (chunk) => {
       }
 
       try {
-        // Validation de la réponse server-key.
         const donnees = validateServerKey(message);
 
         serverNonce = donnees.nonce;
 
-        // Calcul du secret ECDH.
         secretPartage = echange.computeSecret(
           donnees.publicKey.toString("base64"),
         );
 
-        // Dérivation des clés de session.
-        // L'ordre des nonces doit être identique chez le client et le serveur.
         clesSession = deriverClesSession(
           secretPartage,
           clientNonce,
           serverNonce,
         );
 
-        // Le secret ECDH n'est plus nécessaire après la dérivation.
         secretPartage.fill(0);
         secretPartage = null;
 
@@ -206,17 +199,9 @@ client.on("data", (chunk) => {
         client.destroy();
         return;
       }
-
-      continue;
-    } catch {
-      console.error(kleur.red("Réponse de négociation invalide."));
-      client.destroy();
-      return;
     }
-  }
-
-  if (Buffer.byteLength(pending, "utf8") > MAX_MESSAGE_BYTES) {
-    console.error(kleur.red("Réponse incomplète trop longue."));
+  } catch {
+    console.error(kleur.red("Message ou cadrage invalide."));
     client.destroy();
   }
 });

@@ -1,10 +1,10 @@
-const {   createECDH,
+const { createECDH,
   randomBytes,
   hkdfSync,
   createCipheriv,
   createDecipheriv,
   createHmac,
-  timingSafeEqual, 
+  timingSafeEqual,
 } = require("node:crypto");
 
 const CURVE = "prime256v1";
@@ -14,6 +14,7 @@ const ENVELOPE_VERSION = 1;
 const IV_BYTES = 16;
 const MAC_BYTES = 32;
 const MAX_ENVELOPE_BYTES = 16384;
+const MAX_BUFFER_BYTES = 65536;
 const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
 
 function decodeBase64Strict(value, expectedBytes) {
@@ -107,8 +108,7 @@ function deriverClesSession(
   secretPartage,
   clientNonce,
   serverNonce,
-) 
-{
+) {
   const entrees = [
     [secretPartage, 32],
     [clientNonce, NONCE_BYTES],
@@ -403,6 +403,76 @@ function creerSequence(sequenceInitiale = 1) {
     },
   };
 }
+
+// Encode une enveloppe pour l'envoi sur TCP.
+// Chaque enveloppe est un objet JSON suivi d'un retour à la ligne.
+function encoderEnveloppe(enveloppe) {
+  if (
+    typeof enveloppe !== "object" ||
+    enveloppe === null ||
+    Array.isArray(enveloppe)
+  ) {
+    throw new Error("Enveloppe invalide.");
+  }
+
+  const ligne = JSON.stringify(enveloppe) + "\n";
+  const donnees = Buffer.from(ligne, "utf8");
+
+  if (donnees.length > MAX_ENVELOPE_BYTES) {
+    throw new Error("Enveloppe trop grande.");
+  }
+
+  return donnees;
+}
+
+// Extrait les enveloppes complètes d'un tampon TCP.
+// Retourne les enveloppes complètes et le fragment incomplet restant.
+function extraireEnveloppes(tampon) {
+  if (!Buffer.isBuffer(tampon)) {
+    throw new Error("Tampon invalide.");
+  }
+
+  if (tampon.length > MAX_BUFFER_BYTES) {
+    throw new Error("Tampon trop grand.");
+  }
+
+  const enveloppes = [];
+  let reste = tampon;
+
+  while (true) {
+    const fin = reste.indexOf("\n");
+
+    if (fin === -1) {
+      break;
+    }
+
+    const ligne = reste.subarray(0, fin);
+    reste = reste.subarray(fin + 1);
+
+    if (ligne.length > MAX_ENVELOPE_BYTES) {
+      throw new Error("Enveloppe trop grande.");
+    }
+
+    try {
+      const enveloppe = JSON.parse(
+        ligne.toString("utf8"),
+      );
+
+      enveloppes.push(enveloppe);
+    } catch {
+      throw new Error("Enveloppe invalide.");
+    }
+  }
+
+  if (reste.length > MAX_BUFFER_BYTES) {
+    throw new Error("Tampon trop grand.");
+  }
+
+  return {
+    enveloppes,
+    reste,
+  };
+}
 module.exports = {
   CURVE,
   PUBLIC_KEY_BYTES,
@@ -419,4 +489,7 @@ module.exports = {
   ouvrirEnveloppe,
   MAX_SEQUENCE,
   creerSequence,
+  MAX_BUFFER_BYTES,
+  encoderEnveloppe,
+  extraireEnveloppes,
 };

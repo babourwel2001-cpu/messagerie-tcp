@@ -49,6 +49,8 @@ const {
 const {
   createKeyExchange,
   deriverClesSession,
+  encoderEnveloppe,
+  extraireEnveloppes,
 } = require("../common/crypto");
 
 const {
@@ -64,9 +66,9 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   process.exit(1);
 }
 
-// Envoie un objet JSON suivi d'un retour à la ligne.
+// Envoi d'un message JSON encodé en enveloppe.
 function send(socket, message) {
-  socket.write(JSON.stringify(message) + "\n");
+  socket.write(encoderEnveloppe(message));
 }
 
 function sendError(socket, message) {
@@ -88,7 +90,7 @@ const server = net.createServer((socket) => {
   const address = `${socket.remoteAddress}:${socket.remotePort}`;
 
   // Tampon pour les données TCP reçues en plusieurs morceaux.
-  let pending = "";
+  let pending = Buffer.alloc(0);
   let username = null;
 
   // Négociation ECDH, propre à chaque connexion.
@@ -130,93 +132,66 @@ const server = net.createServer((socket) => {
 
   console.error(`CONNECTED from ${address}`);
 
-  socket.setEncoding("utf8");
 
-  // Réception et découpage des messages JSON terminés par \n.
+  // Réception, cadrage et traitement des messages JSON.
   socket.on("data", (chunk) => {
-    pending += chunk;
+    try {
+      pending = Buffer.concat([pending, chunk]);
 
-    let newline;
+      const resultat = extraireEnveloppes(pending);
 
-    while ((newline = pending.indexOf("\n")) !== -1) {
-      const line = pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
+      pending = resultat.reste;
 
-      if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES) {
-        console.error(`Message trop long from ${address}`);
-        socket.destroy();
-        return;
+      for (const message of resultat.enveloppes) {
+        if (etatNegociation !== "attente-cle") {
+          console.error(`Message inattendu : ${address}`);
+          socket.destroy();
+          return;
+        }
+
+        try {
+          const donnees = validateClientKey(message);
+
+          echange = createKeyExchange();
+
+          clientNonce = donnees.nonce;
+          serverNonce = Buffer.from(echange.nonce, "base64");
+
+          secretPartage = echange.computeSecret(
+            donnees.publicKey.toString("base64"),
+          );
+
+          clesSession = deriverClesSession(
+            secretPartage,
+            clientNonce,
+            serverNonce,
+          );
+
+          secretPartage.fill(0);
+          secretPartage = null;
+
+          const reponse = buildServerKey(
+            echange.publicKey,
+            echange.nonce,
+          );
+
+          send(socket, reponse);
+
+          etatNegociation = "ecdh-termine";
+          clearTimeout(delaiNegociation);
+          echange = null;
+
+          console.error(
+            `ECDH et HKDF terminés : ${address}. Canal chiffré non encore disponible.`,
+          );
+        } catch {
+          console.error(`Négociation refusée : ${address}`);
+          socket.destroy();
+          return;
+        }
       }
-
-      let message;
-
-      try {
-        message = JSON.parse(line);
-      } catch {
-        console.error(`Négociation refusée : ${address}`);
-        socket.destroy();
-        return;
-      }
-
-      // Après la négociation, le serveur ne doit plus recevoir
-      // de message de négociation.
-      if (etatNegociation !== "attente-cle") {
-        console.error(`Message inattendu : ${address}`);
-        socket.destroy();
-        return;
-      }
-
-      try {
-        // Validation de la requête client-key.
-        const donnees = validateClientKey(message);
-
-        echange = createKeyExchange();
-
-        clientNonce = donnees.nonce;
-        serverNonce = Buffer.from(echange.nonce, "base64");
-
-        // Calcul du secret ECDH.
-        secretPartage = echange.computeSecret(
-          donnees.publicKey.toString("base64"),
-        );
-
-        // Dérivation des clés de session.
-        // L'ordre des nonces doit être identique chez le client et le serveur.
-        clesSession = deriverClesSession(
-          secretPartage,
-          clientNonce,
-          serverNonce,
-        );
-
-        // Le secret ECDH n'est plus nécessaire après la dérivation.
-        secretPartage.fill(0);
-        secretPartage = null;
-
-        const reponse = buildServerKey(
-          echange.publicKey,
-          echange.nonce,
-        );
-
-        send(socket, reponse);
-
-        etatNegociation = "ecdh-termine";
-        clearTimeout(delaiNegociation);
-        echange = null;
-
-        console.error(
-          `ECDH et HKDF terminés : ${address}. Canal chiffré non encore disponible.`,
-        );
-      } catch {
-        console.error(`Négociation refusée : ${address}`);
-        socket.destroy();
-        return;
-      }
-
-      continue;
-    }
-
-    if (Buffer.byteLength(pending, "utf8") > MAX_MESSAGE_BYTES) {
-      console.error(`Message incomplet trop long from ${address}`);
+    } catch {
+      console.error(`Message ou cadrage invalide : ${address}`);
       socket.destroy();
     }
   });

@@ -1068,14 +1068,15 @@ Ces tests valident l’enveloppe localement. Ils ne prouvent pas
 encore que le client et le serveur échangent des enveloppes
 sur TCP, ni que les séquences empêchent le rejeu.
 
-### TP 09 — Rejeu et cadrage TCP
+### TP 09 - Rejeu et cadrage TCP
 
 - [x] Gérer les séquences indépendamment dans chaque direction.
 - [x] Définir le traitement des sauts et du dépassement du compteur.
 - [x] Rejeter les enveloppes rejouées.
 - [x] Tester les enveloppes fragmentées et regroupées.
-- [ ] Limiter les tailles et le tampon de réception.
-- [ ] Vérifier qu’un rejet ne déclenche aucune commande métier.
+- [x] Limiter les tailles et le tampon de réception.
+- [x] Intégrer le cadrage TCP côté client et côté serveur.
+- [x] Vérifier la négociation ECDH et HKDF après l’intégration du cadrage.
 
 La gestion des séquences est implémentée dans `creerSequence()`
 de `src/common/crypto.js`.
@@ -1094,19 +1095,50 @@ Sont donc rejetés :
 - une séquence invalide ;
 - une séquence au-delà du compteur maximal.
 
-Fichier de tests : `test/sequence.test.js`.
+Le cadrage TCP est implémenté avec `encoderEnveloppe()`
+et `extraireEnveloppes()`.
 
-Commande :
+Chaque message JSON est terminé par `\n`.
+
+Le tampon de réception :
+
+- conserve les fragments incomplets ;
+- extrait les messages complets ;
+- accepte plusieurs messages dans un même événement `data` ;
+- rejette une enveloppe dépassant 16 384 octets ;
+- rejette un tampon dépassant 65 536 octets ;
+- rejette un JSON invalide.
+
+Fichiers de tests :
+
+- `test/sequence.test.js`
+- `test/framing.test.js`
+
+Commandes :
 
 ```bash
 node --test test/sequence.test.js
+node --test test/framing.test.js
 ```
 
-Résultat observé : 8 tests exécutés, 8 réussis, 0 échec.
+Résultats observés :
 
-Ces tests valident la logique locale des séquences.
-Ils ne prouvent pas encore que le client et le serveur
-utilisent ces compteurs lors d’un échange TCP réel.
+| Fichier | Tests | Réussis | Échecs |
+|---|---:|---:|---:|
+| `test/sequence.test.js` | 8 | 8 | 0 |
+| `test/framing.test.js` | 9 | 9 | 0 |
+
+Validation TCP :
+
+Après l’intégration du cadrage, la négociation ECDH et la dérivation
+HKDF ont été vérifiées entre le client et le serveur.
+
+Le client envoie `client-key`, le serveur répond `server-key`,
+puis les deux participants calculent leur secret ECDH
+et dérivent leurs clés de session.
+
+Les commandes métier restent bloquées tant que le canal
+chiffré et authentifié n’est pas intégré à la messagerie.
 
 ### Intégration et analyse
 
