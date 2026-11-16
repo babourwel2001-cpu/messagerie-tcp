@@ -1,5 +1,11 @@
+// Serveur de messagerie TCP.
+// Négociation ECDH et dérivation HKDF.
+// Les commandes métier restent bloquées tant que le canal
+// chiffré et authentifié n'est pas disponible.
+
 const { ACTIONS } = require("../common/protocol");
 const {
+  buildServerKey,
   buildServerHello,
   buildServerMessage,
   buildServerError,
@@ -17,12 +23,13 @@ const {
   buildServerGroupUnbanned,
   buildServerGroupStates,
 } = require("../common/messages");
+
 const net = require("node:net");
 
+// Annuaire des utilisateurs connectés.
 const clients = new Map();
 
-//pour les groupes:création, récupération, vérification de l'appartenance et de l'interdiction
-
+// Fonctions de gestion des groupes.
 const {
   createGroupForUser,
   joinGroupForUser,
@@ -36,18 +43,28 @@ const {
   getGroupStatesForUser,
   listGroupNames,
   disconnectUserFromGroups,
-} = require("./groups"); //importation des fonctions de gestion des groupes
+} = require("./groups");
 
+// Fonctions de négociation ECDH et de dérivation HKDF.
+const {
+  createKeyExchange,
+  deriverClesSession,
+} = require("../common/crypto");
+
+const {
+  validateClientKey,
+} = require("../common/negociation");
 
 const HOST = process.env.SERVER_HOST || "127.0.0.1";
 const PORT = Number(process.env.SERVER_PORT || "8080");
-const MAX_MESSAGE_BYTES = 8192; // Limite de taille des messages en octets
+const MAX_MESSAGE_BYTES = 8192;
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
   process.exit(1);
 }
 
+// Envoie un objet JSON suivi d'un retour à la ligne.
 function send(socket, message) {
   socket.write(JSON.stringify(message) + "\n");
 }
@@ -69,13 +86,53 @@ function isValidName(name) {
 
 const server = net.createServer((socket) => {
   const address = `${socket.remoteAddress}:${socket.remotePort}`;
+
+  // Tampon pour les données TCP reçues en plusieurs morceaux.
   let pending = "";
   let username = null;
+
+  // Négociation ECDH, propre à chaque connexion.
+  let etatNegociation = "attente-cle";
+  let echange = null;
+  let secretPartage = null;
+  let clientNonce = null;
+  let serverNonce = null;
+
+  // Clés dérivées avec HKDF.
+  let clesSession = null;
+
+  const delaiNegociation = setTimeout(() => {
+    console.error(`Négociation expirée : ${address}`);
+    socket.destroy();
+  }, 10000);
+
+  // Nettoie les données sensibles lors d'une erreur ou d'une fermeture.
+  function nettoyerNegociation() {
+    clearTimeout(delaiNegociation);
+
+    if (secretPartage !== null) {
+      secretPartage.fill(0);
+      secretPartage = null;
+    }
+
+    if (clesSession !== null) {
+      clesSession.encryptionKey.fill(0);
+      clesSession.macKey.fill(0);
+      clesSession = null;
+    }
+
+    echange = null;
+    clientNonce = null;
+    serverNonce = null;
+    pending = "";
+    etatNegociation = "ferme";
+  }
 
   console.error(`CONNECTED from ${address}`);
 
   socket.setEncoding("utf8");
 
+  // Réception et découpage des messages JSON terminés par \n.
   socket.on("data", (chunk) => {
     pending += chunk;
 
@@ -96,381 +153,66 @@ const server = net.createServer((socket) => {
       try {
         message = JSON.parse(line);
       } catch {
-        send(socket, buildServerError("JSON invalide."));
-        continue;
+        console.error(`Négociation refusée : ${address}`);
+        socket.destroy();
+        return;
       }
 
-      if (
-        message === null ||
-        typeof message !== "object" ||
-        Array.isArray(message)
-      ) {
-        sendError(socket, "Objet JSON attendu.");
-        continue;
+      // Après la négociation, le serveur ne doit plus recevoir
+      // de message de négociation.
+      if (etatNegociation !== "attente-cle") {
+        console.error(`Message inattendu : ${address}`);
+        socket.destroy();
+        return;
       }
 
-      console.error(`MESSAGE from ${address}:`, message);
+      try {
+        // Validation de la requête client-key.
+        const donnees = validateClientKey(message);
 
-      if (message.action === "client-hello") {
-        if (username !== null) {
-          sendError(socket, "Vous êtes déjà présenté.");
-          continue;
-        }
+        echange = createKeyExchange();
 
-        if (!isValidName(message.sender)) {
-          send(socket, buildServerError("Nom invalide."));
-          continue;
-        }
+        clientNonce = donnees.nonce;
+        serverNonce = Buffer.from(echange.nonce, "base64");
 
-        const requestedName = message.sender.trim();
+        // Calcul du secret ECDH.
+        secretPartage = echange.computeSecret(
+          donnees.publicKey.toString("base64"),
+        );
 
-        console.error("Noms déjà utilisés :", [...clients.keys()]);
+        // Dérivation des clés de session.
+        // L'ordre des nonces doit être identique chez le client et le serveur.
+        clesSession = deriverClesSession(
+          secretPartage,
+          clientNonce,
+          serverNonce,
+        );
 
-        if (clients.has(requestedName)) {
-          sendError(socket, "Ce nom est déjà utilisé.");
-          continue;
-        }
+        // Le secret ECDH n'est plus nécessaire après la dérivation.
+        secretPartage.fill(0);
+        secretPartage = null;
 
-        username = requestedName;
-        clients.set(username, socket);
+        const reponse = buildServerKey(
+          echange.publicKey,
+          echange.nonce,
+        );
 
-        console.error(`Utilisateur enregistré : ${username}`);
-        console.error("Noms connectés :", [...clients.keys()]);
+        send(socket, reponse);
 
-        send(socket, buildServerHello(username, `Bienvenue ${username}`));
+        etatNegociation = "ecdh-termine";
+        clearTimeout(delaiNegociation);
+        echange = null;
 
-        continue;
+        console.error(
+          `ECDH et HKDF terminés : ${address}. Canal chiffré non encore disponible.`,
+        );
+      } catch {
+        console.error(`Négociation refusée : ${address}`);
+        socket.destroy();
+        return;
       }
 
-      if (username === null) {
-        sendError(socket, "Présentation obligatoire.");
-        continue;
-      }
-
-      if (message.action === "client-send") {
-        if (typeof message.dest !== "string" || message.dest.trim() === "") {
-          send(socket, buildServerError("Destinataire invalide."));
-          continue;
-        }
-
-        if (typeof message.msg !== "string" || message.msg.trim() === "") {
-          send(socket, buildServerError("Message vide ou invalide."));
-          continue;
-        }
-
-        const destinationName = message.dest.trim();
-        const destinationSocket = clients.get(destinationName);
-
-        if (!destinationSocket) {
-          sendError(socket, `Utilisateur ${destinationName} introuvable.`);
-          continue;
-        }
-
-        send(destinationSocket, buildServerMessage(username, message.msg));
-
-        continue;
-      }
-      if (message.action === "client-broadcast") {
-        if (typeof message.msg !== "string" || message.msg.trim() === "") {
-          send(socket, buildServerError("Message vide ou invalide."));
-          continue;
-        }
-
-        const broadcastMessage = {
-          sender: username,
-          action: "server-broadcast",
-          msg: message.msg,
-        };
-
-        for (const clientSocket of clients.values()) {
-          send(clientSocket, broadcastMessage);
-        }
-
-        continue;
-      }
-      if (message.action === "client-list-clients") {
-        const names = [...clients.keys()].sort((a, b) => a.localeCompare(b));
-
-        send(socket, {
-          action: "server-clients",
-          clients: names,
-        });
-
-        continue;
-      }
-      if (message.action === "client-quit") {
-        send(socket, {
-          action: "server-goodbye",
-          msg: `Au revoir ${username}`,
-        });
-
-        socket.end();
-        continue;
-      }
-      // pour les groupes: création et récupération
-
-      if (message.action === "cgroupe") {
-        const result = createGroupForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupCreated(
-            username,
-            result.group.name,
-          ),
-        );
-
-        continue;
-      }
-
-      if (message.action === "groups") {
-        const groupNames = listGroupNames();
-
-        send(socket, buildServerGroups(groupNames));
-
-        continue;
-      }
-
-      if (message.action === "join") {
-        const result = joinGroupForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupJoined(
-            username,
-            result.group.name,
-          ),
-        );
-
-        continue;
-      }
-
-      if (message.action === "members") {
-        const result = getMembersForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerMembers(
-            result.group.name,
-            result.members,
-          ),
-        );
-
-        continue;
-      }
-
-      if (message.action === "leave") {
-        const result = leaveGroupForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupLeft(
-            username,
-            result.group.name,
-          ),
-        );
-
-        continue;
-      }
-
-      if (message.action === "gbroadcast") {
-        const result = postGroupMessageForUser(
-          message.group,
-          username,
-          message.msg,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        const serverMessage = buildServerGroupMessage(
-          result.message.sender,
-          result.groupName,
-          result.message.msg,
-        );
-
-        for (const memberName of result.members) {
-          const memberSocket = clients.get(memberName);
-
-          if (memberSocket) {
-            send(memberSocket, serverMessage);
-          }
-        }
-
-        continue;
-      }
-
-      if (message.action === "msgs") {
-        const result = getGroupMessagesForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupMessages(
-            result.groupName,
-            result.messages,
-          ),
-        );
-
-        continue;
-      }
-      if (message.action === "invite") {
-        const result = inviteUserToGroup(
-          message.group,
-          username,
-          message.dest,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupInvited(
-            username,
-            result.groupName,
-            result.destination,
-          ),
-        );
-
-        const destinationSocket = clients.get(
-          result.destination,
-        );
-
-        if (destinationSocket) {
-          send(
-            destinationSocket,
-            buildServerGroupInvitation(
-              username,
-              result.groupName,
-            ),
-          );
-        }
-
-        continue;
-      }
-      if (message.action === "kick" || message.action === "ban") {
-        const result = moderateGroupMember(
-          message.group,
-          username,
-          message.dest,
-          message.reason,
-          message.action,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        const response =
-          message.action === "ban"
-            ? buildServerGroupBanned(
-              username,
-              result.groupName,
-              result.destination,
-              result.reason,
-            )
-            : buildServerGroupKicked(
-              username,
-              result.groupName,
-              result.destination,
-              result.reason,
-            );
-
-        send(socket, response);
-
-        continue;
-      }
-
-      if (message.action === "unban") {
-        const result = unbanUserFromGroup(
-          message.group,
-          username,
-          message.dest,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupUnbanned(
-            username,
-            result.groupName,
-            result.destination,
-          ),
-        );
-
-        continue;
-      }
-      if (message.action === "states") {
-        const result = getGroupStatesForUser(
-          message.group,
-          username,
-        );
-
-        if (result.error) {
-          sendError(socket, result.error);
-          continue;
-        }
-
-        send(
-          socket,
-          buildServerGroupStates(
-            result.groupName,
-            result.states,
-          ),
-        );
-
-        continue;
-      }
-      sendError(socket, "Action inconnue.");
+      continue;
     }
 
     if (Buffer.byteLength(pending, "utf8") > MAX_MESSAGE_BYTES) {
@@ -480,10 +222,13 @@ const server = net.createServer((socket) => {
   });
 
   socket.on("error", (error) => {
+    nettoyerNegociation();
     console.error(`Socket error from ${address}: ${error.message}`);
   });
 
   socket.on("close", () => {
+    nettoyerNegociation();
+
     console.error(`CLOSE ${address}, username =`, username);
 
     if (username !== null && clients.get(username) === socket) {
