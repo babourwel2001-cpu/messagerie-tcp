@@ -1,4 +1,4 @@
-# Messagerie TCP — Node.js
+# Messagerie TCP - Node.js
 
 Application de messagerie en ligne de commande utilisant TCP et des
 messages JSON.
