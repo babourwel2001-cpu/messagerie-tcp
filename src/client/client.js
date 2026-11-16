@@ -20,6 +20,7 @@ const {
   buildClientKey,
   buildClientRegister,
   buildClientAuth,
+  buildClientHistory,
 } = require("../common/messages");
 const cryptoTools = require("../common/crypto");
 
@@ -150,6 +151,22 @@ client.on("data", (chunk) => {
         console.log(
           kleur.blue("Utilisez register;mot_de_passe puis login;mot_de_passe (identifiant : " + name + ")."),
         );
+      } else if (message.action === "server-history") {
+        console.log(kleur.blue(`Votre historique (${message.items.length}) :`));
+
+        for (const item of message.items) {
+          const when = item.date || "date inconnue";
+
+          if (item.kind === "private") {
+            console.log(kleur.cyan(`[${when}] -> ${item.dest} : ${item.msg}`));
+          } else if (item.kind === "private-in") {
+            console.log(kleur.cyan(`[${when}] <- ${item.from} : ${item.msg}`));
+          } else if (item.kind === "broadcast") {
+            console.log(kleur.yellow(`[${when}] (à tous) ${item.msg}`));
+          } else {
+            console.log(kleur.cyan(`[${when}] [${item.group}] ${item.msg}`));
+          }
+        }
       } else if (message.action === "auth-result") {
         const text = AUTH_MESSAGES[message.code] || message.code;
 
@@ -287,6 +304,16 @@ rl.on("line", (line) => {
       const build = parts[0] === "register" ? buildClientRegister : buildClientAuth;
 
       writeLine(JSON.stringify(build(name, password)) + "\n");
+    }
+  } else if (parts[0] === "history") {
+    const limit = parts[1] ? Number(parts[1]) : undefined;
+
+    if (!SECURE_CHANNEL) {
+      console.log("Commande disponible seulement avec SECURE_CHANNEL=1.");
+    } else if (limit !== undefined && !Number.isInteger(limit)) {
+      console.log("Usage : history ou history;nombre");
+    } else {
+      writeLine(JSON.stringify(buildClientHistory(limit)) + "\n");
     }
   } else if (parts[0] === "s") {
     const destination = parts[1]?.trim();

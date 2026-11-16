@@ -37,7 +37,7 @@ const ACTIONS = {
   SERVER_GROUP_INVITED: "server-group-invited",
 
   //pour modérer les groupes
-  
+
   CLIENT_KICK: "kick",
   CLIENT_BAN: "ban",
   CLIENT_UNBAN: "unban",
@@ -58,6 +58,10 @@ const ACTIONS = {
   CLIENT_REGISTER: "register",
   CLIENT_AUTH: "auth",
   SERVER_AUTH_RESULT: "auth-result",
+
+  // pour l'historique du compte authentifié
+  CLIENT_HISTORY: "history",
+  SERVER_HISTORY: "server-history",
 };
 
 module.exports = { ACTIONS };

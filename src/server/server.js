@@ -19,6 +19,7 @@ const {
   buildServerGoodbye,
   buildServerKey,
   buildServerAuthResult,
+  buildServerHistory,
 } = require("../common/messages");
 const net = require("node:net");
 const cryptoTools = require("../common/crypto");
@@ -45,7 +46,7 @@ const {
 
 const HOST = process.env.SERVER_HOST || "127.0.0.1";
 const PORT = Number(process.env.SERVER_PORT || "8080");
-const MAX_MESSAGE_BYTES = 8192; // Limite de taille des messages en octets
+const MAX_MESSAGE_BYTES = 8192;
 
 const REQUIRE_AUTH = process.env.REQUIRE_AUTH === "1";
 
@@ -53,6 +54,19 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   console.error("SERVER_PORT doit être un entier entre 1 et 65535.");
   process.exit(1);
 }
+
+let writeQueue = Promise.resolve();
+
+function enqueueWrite(userId, kind, content) {
+  writeQueue = writeQueue
+    .then(() => database.addMessage(userId, kind, JSON.stringify(content)))
+    .catch((error) => console.error(`Message non enregistré : ${error.message}`));
+}
+
+const MAX_HISTORY_BYTES = 5500;
+const MAX_HISTORY_ITEMS = 50;
+const DEFAULT_HISTORY_ITEMS = 20;
+const MAX_HISTORY_TEXT = 300;
 
 function send(socket, message) {
   const text = JSON.stringify(message);
@@ -85,7 +99,7 @@ const server = net.createServer((socket) => {
   const address = `${socket.remoteAddress}:${socket.remotePort}`;
   let pending = "";
   let username = null;
-  let userId = null;
+  let userId = null
   let state = "connected";
   let authPending = false;
 
@@ -141,7 +155,7 @@ const server = net.createServer((socket) => {
           ? await auth.register(message.name, message.password)
           : await auth.login(message.name, message.password);
     } catch (error) {
-      console.error(`Erreur d'authentification : ${error.message}`); // jamais le mot de passe
+      console.error(`Erreur d'authentification : ${error.message}`);
       authPending = false;
 
       if (!socket.destroyed) send(socket, buildServerAuthResult(false, auth.CODES.SERVER_ERROR));
@@ -162,6 +176,7 @@ const server = net.createServer((socket) => {
     } else {
       state = "authenticated";
       userId = result.user.id;
+      socket.userId = userId;
       username = result.user.name;
       clients.set(username, socket);
 
@@ -173,9 +188,42 @@ const server = net.createServer((socket) => {
   function store(kind, content) {
     if (!REQUIRE_AUTH || userId === null) return;
 
-    database
-      .addMessage(userId, kind, JSON.stringify(content))
-      .catch((error) => console.error(`Message non enregistré : ${error.message}`));
+    enqueueWrite(userId, kind, content);
+  }
+
+  async function handleHistory(message) {
+    let limit = Number.isInteger(message.limit) ? message.limit : DEFAULT_HISTORY_ITEMS;
+    limit = Math.min(Math.max(limit, 1), MAX_HISTORY_ITEMS);
+
+    try {
+      await writeQueue;
+      const rows = await database.listMessages(userId, limit);
+
+      if (socket.destroyed) return;
+
+      let items = rows.map((row) => {
+        const content = JSON.parse(row.body);
+
+        return {
+          date: row.created_at,
+          kind: row.kind,
+          ...content,
+          msg: String(content.msg).slice(0, MAX_HISTORY_TEXT),
+        };
+      });
+
+      while (
+        items.length > 1 &&
+        Buffer.byteLength(JSON.stringify(buildServerHistory(items)), "utf8") > MAX_HISTORY_BYTES
+      ) {
+        items = items.slice(1);
+      }
+
+      send(socket, buildServerHistory(items));
+    } catch (error) {
+      console.error(`Historique impossible : ${error.message}`);
+      if (!socket.destroyed) sendError(socket, "Historique indisponible.");
+    }
   }
 
   function clearSession() {
@@ -189,6 +237,7 @@ const server = net.createServer((socket) => {
 
     username = null;
     userId = null;
+    socket.userId = undefined;
     state = "closed";
     authPending = false;
     socket.channel = undefined; // les clés du canal sont oubliées
@@ -275,6 +324,15 @@ const server = net.createServer((socket) => {
         }
       }
 
+      if (message.action === ACTIONS.CLIENT_HISTORY) {
+        if (!REQUIRE_AUTH) {
+          sendError(socket, "Historique disponible seulement en mode sécurisé.");
+        } else {
+          handleHistory(message);
+        }
+        continue;
+      }
+
       if (message.action === "client-hello") {
         if (username !== null) {
           sendError(socket, "Vous êtes déjà présenté.");
@@ -331,7 +389,15 @@ const server = net.createServer((socket) => {
         }
 
         send(destinationSocket, buildServerMessage(username, message.msg));
-        store("private", { dest: destinationName, msg: message.msg });
+        store("private", { dest: destinationName, msg: message.msg }); // chez l'expéditeur
+
+        // Chez le destinataire : seulement s'il est authentifié (donc rattaché à un compte)
+        if (REQUIRE_AUTH && destinationSocket.userId !== undefined) {
+          enqueueWrite(destinationSocket.userId, "private-in", {
+            from: username,
+            msg: message.msg,
+          });
+        }
 
         continue;
       }
@@ -651,7 +717,6 @@ const server = net.createServer((socket) => {
   socket.on("error", (error) => {
     console.error(`Socket error from ${address}: ${error.message}`);
 
-    // L'état de session est effacé aussi sur erreur ; close suivra et ne refera rien
     clearSession();
     socket.destroy();
   });
@@ -670,7 +735,7 @@ server.on("error", (error) => {
 });
 
 async function start() {
-  if (REQUIRE_AUTH) await database.open(); // crée data/chat.db au premier lancement
+  if (REQUIRE_AUTH) await database.open();
 
   server.listen(PORT, HOST, () => {
     console.error(

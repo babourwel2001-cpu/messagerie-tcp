@@ -353,7 +353,23 @@ function buildServerAuthResult(ok, code) {
   };
 }
 
+function buildClientHistory(limit) {
+  return {
+    action: ACTIONS.CLIENT_HISTORY,
+    limit,
+  };
+}
+
+function buildServerHistory(items) {
+  return {
+    action: ACTIONS.SERVER_HISTORY,
+    items,
+  };
+}
+
 module.exports = {
+  buildClientHistory,
+  buildServerHistory,
   buildClientKey,
   buildServerKey,
   buildClientRegister,

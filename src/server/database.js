@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const sqlite3 = require("sqlite3");
 
-const KINDS = ["private", "broadcast", "group"];
+const KINDS = ["private", "private-in", "broadcast", "group"];
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS messages (
   FOREIGN KEY (user_id) REFERENCES users(id)
 );`;
 
-let db = null;
+let db = null; // la connexion ouverte
 
 function run(sql, params = []) {
   return new Promise((resolve, reject) => {
