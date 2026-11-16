@@ -891,9 +891,10 @@ Aucun message de discussion n’est encore protégé par ce travail.
 - [x] Tester les champs manquants, supplémentaires et invalides.
 - [x] Vérifier le rejet d'un point elliptique invalide.
 - [ ] Définir et valider le format des clés publiques et des nonces.
-- [ ] Implémenter les messages `client-key` et `server-key`.
-- [ ] Brancher la négociation sur TCP.
-- [ ] Tester la fermeture propre d’une négociation invalide.
+- [x] Brancher la négociation sur TCP.
+- [x] Tester la fermeture propre d’une négociation invalide.
+- [x] Bloquer les commandes métier avant l’intégration du canal protégé.
+- [x] Dérivre les clés de session avec HKDF côté client et côté serveur.
 
 ### Validation locale de la négociation et de HKDF
 
@@ -903,10 +904,11 @@ Fichiers de tests exécutés :
 - `test/crypto.test.js`
 - `test/negociation.test.js`
 - `test/hkdf.test.js`
+- `test/enveloppe.test.js`
 
 Commande depuis la racine du projet :
 
-  node --test test/ecdh-lab.test.js test/crypto.test.js test/negociation.test.js test/hkdf.test.js
+node --test test/ecdh-lab.test.js test/crypto.test.js test/negociation.test.js test/hkdf.test.js test/enveloppe.test.js
 
 Résultat observé le 13 novembre 2026 :
 38 tests exécutés, 38 réussis, 0 échec.
@@ -935,6 +937,46 @@ Résultats observés côté client :
 Le canal chiffré n'est pas encore implémenté.
 Cet essai ne vérifie pas à lui seul l'égalité des secrets
 des deux côtés ni l'identité du serveur.
+
+### Essai ECDH et HKDF sur TCP
+
+Essai réalisé avec le client classique `src/client/client.js`.
+
+Commande :
+
+    npm run client -- --name alice
+
+Résultats observés côté client :
+
+- connexion TCP établie ;
+- envoi du message `client-key` ;
+- réception et validation de la réponse `server-key` ;
+- calcul du secret ECDH ;
+- dérivation des clés de session avec HKDF ;
+- effacement du Buffer du secret ECDH ;
+- blocage de la commande `ls` ;
+- fermeture propre avec `q`.
+
+Résultats attendus côté serveur :
+
+- réception et validation de `client-key` ;
+- création de sa propre paire de clés ECDH ;
+- calcul du secret ECDH ;
+- dérivation des clés de session avec HKDF ;
+- envoi de `server-key` ;
+- effacement du Buffer du secret ECDH ;
+- rejet des messages suivants, car le canal protégé n'est pas disponible.
+
+Les clés de session ne sont ni affichées ni transmises.
+
+L'ordre de dérivation est identique chez les deux participants :
+
+    clientNonce suivi de serverNonce
+
+Le chiffrement AES et l'authentification HMAC ne sont pas encore intégrés.
+Cet essai ne prouve pas à lui seul que les clés dérivées sont identiques
+des deux côtés : cette compatibilité sera vérifiée lors de l'échange
+des premières enveloppes protégées.
 
 ### Blocage des commandes avant le canal protégé
 
@@ -989,12 +1031,42 @@ Ces tests valident la dérivation locale. Ils ne prouvent pas
 encore que le client et le serveur utilisent HKDF sur TCP,
 ni que les clés produites sont compatibles lors d’une connexion réelle.
 
-### TP 08 — Enveloppe chiffrée et authentifiée
+### TP 08 - Enveloppe chiffrée et authentifiée
 
-- [ ] Implémenter AES-256-CBC avec un nouvel IV par message.
-- [ ] Définir les octets couverts par le HMAC.
-- [ ] Vérifier le HMAC avant le déchiffrement.
-- [ ] Tester un aller-retour et les altérations de l’enveloppe.
+- [x] Implémenter AES-256-CBC avec un nouvel IV par message.
+- [x] Définir les octets couverts par le HMAC.
+- [x] Vérifier le HMAC avant le déchiffrement.
+- [x] Tester un aller-retour et les altérations de l’enveloppe.
+- [x] Rejeter une enveloppe créée avec une autre clé HMAC.
+- [x] Rejeter les champs invalides.
+
+L’enveloppe est créée et ouverte dans `src/common/crypto.js`.
+
+Le HMAC couvre :
+
+- la version de l’enveloppe ;
+- l’expéditeur ;
+- le destinataire ;
+- la séquence ;
+- l’IV ;
+- le texte chiffré.
+
+Le HMAC est vérifié avant le déchiffrement.
+Une altération de l’un de ces éléments est donc rejetée.
+
+Fichier de tests : `test/enveloppe.test.js`.
+
+Commande :
+
+```bash
+node --test test/enveloppe.test.js
+```
+
+Résultat observé : 10 tests exécutés, 10 réussis, 0 échec.
+
+Ces tests valident l’enveloppe localement. Ils ne prouvent pas
+encore que le client et le serveur échangent des enveloppes
+sur TCP, ni que les séquences empêchent le rejeu.
 
 ### TP 09 — Rejeu et cadrage TCP
 
