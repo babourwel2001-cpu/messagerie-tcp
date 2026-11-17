@@ -1150,6 +1150,11 @@ chiffré et authentifié n’est pas intégré à la messagerie.
 - [x] Implémenter une variante TLS de la messagerie.
 - [x] Valider la confidentialité des échanges TLS par capture réseau.
 - [x] Décrire une évolution vers TLS avec validation du serveur.
+- [x] Intégrer les comptes et l’authentification par mot de passe.
+- [x] Intégrer SQLite pour les comptes et l’historique.
+- [x] Hacher les mots de passe avec bcrypt.
+- [x] Enregistrer les messages privés et les diffusions.
+- [x] Tester la persistance après redémarrage du serveur.
 
 ### Points de contrat à préciser
 
@@ -1652,6 +1657,43 @@ dans la première variante :
 | Identité du serveur | Non vérifiée | Certificat vérifié |
 | Protection contre l’homme du milieu | Non | Oui |
 
+### Intégration des comptes dans TLS
+
+Les comptes utilisateurs, l’authentification par mot de passe
+et l’historique persistant ont également été intégrés à la
+variante TLS.
+
+Le serveur TLS utilise les mêmes modules que la variante ECDH :
+
+- `src/server/auth.js` pour l’inscription et la connexion ;
+- `src/server/database.js` pour SQLite et l’historique ;
+- `src/common/crypto.js` pour le hachage bcrypt des mots de passe.
+
+Après l’établissement de la session TLS, le client peut créer
+un compte ou se connecter :
+
+```text
+register;motdepasse123
+login;motdepasse123
+```
+
+L’inscription crée le compte dans SQLite, mais ne connecte pas
+automatiquement l’utilisateur.
+
+La connexion vérifie le mot de passe avec bcrypt, puis enregistre
+l’utilisateur comme connecté.
+
+Les messages privés et les diffusions générales sont enregistrés
+dans l’historique du compte authentifié.
+
+L’utilisateur peut consulter son historique avec :
+
+```text
+history
+```
+
+L’historique est conservé dans la base SQLite `data/chat.db`.
+Il reste disponible après le redémarrage du serveur.
 
 ### Certificat du serveur
 
@@ -1742,24 +1784,44 @@ Dans un troisième terminal :
 npm run client:tls -- --name bob
 ```
 
-
 ### Test réalisé
 
-Depuis Alice :
+Le serveur TLS a été lancé avec :
+
+```bash
+npm run server:tls
+```
+
+Alice et Bob ont été lancés avec :
+
+```bash
+npm run client:tls -- --name alice
+npm run client:tls -- --name bob
+```
+
+Alice a créé puis utilisé son compte :
 
 ```text
+register;motdepasse123
+login;motdepasse123
 ls
 s;bob;message secret TLS
+history
 ```
 
-Bob reçoit le message privé :
+Bob a créé puis utilisé son compte :
 
 ```text
-[Privé] <alice> message secret TLS
+register;motdepasse456
+login;motdepasse456
+ls
 ```
 
-La commande `ls` affiche également les utilisateurs connectés.
+La commande `ls` affiche les utilisateurs authentifiés.
 
+Le message privé envoyé par Alice est reçu par Bob.
+
+La commande `history` affiche l’historique du compte authentifié.
 
 ### Observation réseau
 
@@ -1812,11 +1874,14 @@ La capture confirme que :
 - les commandes et les messages sont transmis dans des
   enregistrements `TLSv1.3 Application Data` ;
 - le contenu applicatif n’apparaît pas en clair dans le trafic ;
-- le client vérifie l’identité du serveur grâce au certificat.
+- le client vérifie l’identité du serveur grâce au certificat ;
+- les comptes sont créés et authentifiés sur le canal TLS ;
+- les messages privés et les diffusions sont enregistrés
+  dans l’historique persistant.
 
-TLS protège donc à la fois la confidentialité, l’intégrité
-et l’authentification du serveur.
-
+TLS protège donc la confidentialité, l’intégrité et l’authentification
+du serveur, tandis que SQLite et bcrypt assurent la persistance
+des comptes et de l’historique.
 
 ### Limites
 
@@ -1827,3 +1892,310 @@ Dans un déploiement réel, le certificat devrait être émis par une
 autorité de certification afin que les clients puissent vérifier
 l’identité du serveur sans devoir importer manuellement son
 certificat.
+
+---
+
+
+## 25. Intégration des comptes et de l’historique persistant
+
+### Objectif
+
+Intégrer les comptes utilisateurs, l’authentification par mot de passe
+et l’historique persistant à la messagerie protégée par ECDH, HKDF,
+AES-256-CBC et HMAC-SHA-256.
+
+L’objectif est de conserver le canal chiffré déjà fonctionnel
+tout en ajoutant la persistance des comptes et des messages.
+
+
+### Fichiers intégrés
+
+| Fichier | Rôle |
+|---|---|
+| `src/server/auth.js` | Inscription et connexion des utilisateurs |
+| `src/server/database.js` | Base SQLite, comptes et historique |
+| `src/common/crypto.js` | Ajout du hachage bcrypt des mots de passe |
+| `src/common/messages.js` | Messages d’authentification et d’historique |
+| `src/common/protocol.js` | Actions `register`, `auth`, `auth-result` et `history` |
+| `src/server/server.js` | Intégration de l’authentification et de l’historique |
+| `src/client/client.js` | Commandes d’inscription, de connexion et d’historique |
+
+
+### Dépendances ajoutées
+
+Les dépendances suivantes ont été ajoutées :
+
+```json
+"bcrypt": "^6.0.0",
+"sqlite3": "^6.0.1"
+```
+
+Commande utilisée :
+
+```bash
+npm install bcrypt sqlite3
+```
+
+
+### Hachage des mots de passe
+
+Les mots de passe ne sont jamais stockés en clair.
+
+Ils sont hachés avec bcrypt :
+
+```js
+async function hashPassword(password) {
+  return bcrypt.hash(password, 10);
+}
+```
+
+La vérification utilise :
+
+```js
+async function verifyPassword(password, passwordHash) {
+  return bcrypt.compare(password, passwordHash);
+}
+```
+
+Le hachage n’est pas un chiffrement : il ne permet pas de retrouver
+le mot de passe initial.
+
+La limite maximale d’un mot de passe est de 72 octets, conformément
+à la limite de bcrypt.
+
+
+### Base de données SQLite
+
+La base est créée dans :
+
+```text
+data/chat.db
+```
+
+Elle contient deux tables :
+
+- `users` : comptes utilisateurs ;
+- `messages` : historique des messages.
+
+La table `users` conserve :
+
+- l’identifiant ;
+- le nom ;
+- le hachage du mot de passe ;
+- la date de création.
+
+La table `messages` conserve :
+
+- l’identifiant de l’utilisateur ;
+- le type de message ;
+- le contenu du message ;
+- la date d’enregistrement.
+
+
+### Flux d’authentification
+
+Après l’établissement du canal chiffré, le client peut créer un compte
+ou se connecter.
+
+#### Inscription
+
+Depuis le client :
+
+```text
+register;motdepasse123
+```
+
+Le client envoie :
+
+```json
+{
+  "action": "register",
+  "name": "alice",
+  "password": "motdepasse123"
+}
+```
+
+Le serveur vérifie le nom et le mot de passe, puis enregistre
+le hachage du mot de passe dans SQLite.
+
+Si le compte est créé, le serveur répond :
+
+```json
+{
+  "action": "auth-result",
+  "ok": true,
+  "code": "registered"
+}
+```
+
+L’inscription ne connecte pas automatiquement l’utilisateur.
+
+
+#### Connexion
+
+Depuis le client :
+
+```text
+login;motdepasse123
+```
+
+Le client envoie :
+
+```json
+{
+  "action": "auth",
+  "name": "alice",
+  "password": "motdepasse123"
+}
+```
+
+Le serveur recherche le compte, vérifie le mot de passe avec bcrypt,
+puis enregistre l’utilisateur comme connecté.
+
+Si la connexion réussit, le serveur répond :
+
+```json
+{
+  "action": "auth-result",
+  "ok": true,
+  "code": "authenticated"
+}
+```
+
+L’utilisateur peut ensuite utiliser les commandes de la messagerie.
+
+
+### Protection du canal
+
+L’inscription et la connexion sont envoyées dans une enveloppe
+chiffrée et authentifiée après la négociation ECDH et la dérivation
+HKDF.
+
+Elles ne sont donc pas transmises en clair sur le réseau.
+
+
+### Historique persistant
+
+Lorsqu’un utilisateur envoie un message privé, le serveur enregistre
+le message dans SQLite :
+
+```js
+database.addMessage(
+  userId,
+  "private",
+  JSON.stringify(buildServerMessage(username, message.msg)),
+);
+```
+
+Lorsqu’un utilisateur envoie une diffusion générale, le serveur
+enregistre également le message :
+
+```js
+database.addMessage(
+  userId,
+  "broadcast",
+  JSON.stringify(buildServerBroadcast(username, message.msg)),
+);
+```
+
+L’utilisateur peut consulter son historique avec :
+
+```text
+history
+```
+
+Le client envoie :
+
+```json
+{
+  "action": "history",
+  "limit": 50
+}
+```
+
+Le serveur répond avec les messages enregistrés pour ce compte.
+
+
+### Test réalisé
+
+Le serveur a été lancé avec :
+
+```bash
+npm run server
+```
+
+Alice et Bob ont été lancés avec :
+
+```bash
+npm run client -- --name alice
+npm run client -- --name bob
+```
+
+Alice s’est connectée avec :
+
+```text
+login;motdepasse123
+```
+
+Bob s’est connecté avec :
+
+```text
+login;motdepasse456
+```
+
+Le serveur a affiché :
+
+```text
+Utilisateur authentifié : alice
+Utilisateur authentifié : bob
+```
+
+La commande suivante a été exécutée depuis Alice :
+
+```text
+ls
+```
+
+Elle a confirmé la présence des deux utilisateurs connectés.
+
+
+### Historique observé
+
+Après l’envoi d’un message privé, la commande suivante a été exécutée
+depuis Alice :
+
+```text
+history
+```
+
+Le message envoyé apparaît dans l’historique du compte.
+
+
+### Persistance vérifiée
+
+Après arrêt et redémarrage du serveur, l’historique reste disponible.
+
+Les messages sont conservés dans la base SQLite `data/chat.db`
+et ne sont pas perdus lors du redémarrage.
+
+
+### Résultat de l’intégration
+
+L’intégration combine désormais :
+
+- le canal chiffré et authentifié ECDH/HKDF/AES/HMAC ;
+- l’authentification des utilisateurs par mot de passe ;
+- le hachage bcrypt ;
+- la persistance des comptes avec SQLite ;
+- la persistance de l’historique des messages.
+
+
+### Limites actuelles
+
+- Les messages de groupe ne sont pas encore enregistrés
+  dans l’historique persistant.
+- La connexion ne restaure pas automatiquement les appartenances
+  aux groupes.
+- La base SQLite est destinée aux tests locaux du projet.
+- Le certificat TLS, lorsqu’il est utilisé, reste auto-signé
+  pour les tests locaux.

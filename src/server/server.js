@@ -3,6 +3,14 @@
 // Les commandes métier restent bloquées tant que le canal
 // chiffré et authentifié n'est pas disponible.
 
+const database = require("./database");
+const auth = require("./auth");
+const {
+  buildServerAuthResult,
+  buildClientHistory,
+  buildServerHistory,
+} = require("../common/messages");
+
 const { ACTIONS } = require("../common/protocol");
 const {
   buildServerKey,
@@ -86,6 +94,7 @@ const {
 
 const HOST = process.env.SERVER_HOST || "127.0.0.1";
 const PORT = Number(process.env.SERVER_PORT || "8080");
+const REQUIRE_AUTH = true;
 const MAX_MESSAGE_BYTES = 8192;
 
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -119,6 +128,8 @@ const server = net.createServer((socket) => {
   // Tampon pour les données TCP reçues en plusieurs morceaux.
   let pending = Buffer.alloc(0);
   let username = null;
+  let userId = null;
+  let authPending = false;
 
   // Négociation ECDH, propre à chaque connexion.
   let etatNegociation = "attente-cle";
@@ -177,6 +188,97 @@ const server = net.createServer((socket) => {
     send(socket, enveloppe);
   }
 
+  // Gère l'inscription et la connexion sur le canal protégé.
+  // Gère l'inscription et la connexion sur le canal protégé.
+  async function gererAuthentification(message) {
+    if (etatNegociation !== "canal-actif") {
+      envoyerProtege(
+        buildServerAuthResult(false, auth.CODES.INSECURE_CHANNEL),
+      );
+
+      return;
+    }
+
+    if (username !== null) {
+      envoyerProtege(
+        buildServerAuthResult(false, auth.CODES.ALREADY_AUTHENTICATED),
+      );
+
+      return;
+    }
+
+    if (authPending) {
+      envoyerProtege(
+        buildServerAuthResult(false, auth.CODES.BUSY),
+      );
+
+      return;
+    }
+
+    authPending = true;
+
+    // Avant l'authentification, le nom demandé est connu grâce au message.
+    const destinataire = message.name;
+
+    // Envoie un résultat d'authentification au client demandeur.
+    function envoyerResultat(ok, code) {
+      const enveloppe = creerEnveloppe(
+        clesSession,
+        "server",
+        destinataire,
+        sequenceServeur.prochaine(),
+        JSON.stringify(buildServerAuthResult(ok, code)),
+      );
+
+      send(socket, enveloppe);
+    }
+
+    try {
+      const result =
+        message.action === "register"
+          ? await auth.register(message.name, message.password)
+          : await auth.login(message.name, message.password);
+
+      authPending = false;
+
+      if (result.error) {
+        envoyerResultat(false, result.code);
+        return;
+      }
+
+      // L'inscription crée le compte, mais ne connecte pas automatiquement.
+      if (message.action === "register") {
+        envoyerResultat(true, result.code);
+        return;
+      }
+
+      // La connexion authentifie le client et l'enregistre.
+      if (clients.has(result.user.name)) {
+        envoyerResultat(false, auth.CODES.ALREADY_ONLINE);
+        return;
+      }
+
+      username = result.user.name;
+      userId = result.user.id;
+
+      clients.set(username, {
+        socket,
+        clesSession,
+        sequenceServeur,
+      });
+
+      console.error(`Utilisateur authentifié : ${username}`);
+
+      envoyerResultat(true, result.code);
+    } catch (error) {
+      authPending = false;
+
+      console.error(`Erreur d'authentification : ${error.message}`);
+
+      envoyerResultat(false, auth.CODES.SERVER_ERROR);
+    }
+  }
+
   // Chiffre et authentifie un message pour un utilisateur précis.
   // Utilise les clés et la séquence propres à sa connexion.
   function envoyerProtegeA(clientSession, message) {
@@ -205,7 +307,7 @@ const server = net.createServer((socket) => {
   console.error(`CONNECTED from ${address}`);
 
   // Réception, cadrage et traitement des messages protégés.
-  socket.on("data", (chunk) => {
+  socket.on("data", async (chunk) => {
     try {
       pending = Buffer.concat([pending, chunk]);
 
@@ -278,7 +380,21 @@ const server = net.createServer((socket) => {
             ouvrirEnveloppe(clesSession, enveloppe),
           );
 
+          // Inscription et connexion.
+          if (message.action === "register" || message.action === "auth") {
+            gererAuthentification(message);
 
+            continue;
+          }
+
+          // L'enregistrement classique est remplacé par l'authentification.
+          if (message.action === "client-hello") {
+            envoyerProtege(
+              buildServerError("Authentification requise."),
+            );
+
+            continue;
+          }
           // Traitement de l'enregistrement du client.
           if (message.action === "client-hello") {
             if (username !== null) {
@@ -351,6 +467,29 @@ const server = net.createServer((socket) => {
 
             continue;
           }
+          // Historique du compte authentifié.
+          if (message.action === "history") {
+            const limit = Number.isInteger(message.limit)
+              ? Math.min(Math.max(message.limit, 1), 50)
+              : 50;
+
+            const rows = await database.listMessages(userId, limit);
+
+            const items = rows.map((row) => {
+              const content = JSON.parse(row.body);
+
+              return {
+                date: row.created_at,
+                kind: row.kind,
+                ...content,
+              };
+            });
+
+            envoyerProtege(buildServerHistory(items));
+
+            continue;
+          }
+
 
           // Envoie un message privé à un autre utilisateur.
           if (message.action === "client-send") {
@@ -400,7 +539,16 @@ const server = net.createServer((socket) => {
             );
 
             send(destinationSession.socket, enveloppeDestination);
-
+            // Enregistre le message privé envoyé dans l'historique du compte.
+            database
+              .addMessage(
+                userId,
+                "private",
+                JSON.stringify(buildServerMessage(username, message.msg)),
+              )
+              .catch((error) => {
+                console.error(`Erreur d'enregistrement : ${error.message}`);
+              });
             continue;
           }
 
@@ -436,6 +584,17 @@ const server = net.createServer((socket) => {
 
               send(sessionDestinataire.socket, enveloppe);
             }
+
+            // Enregistre le message diffusé dans l'historique du compte.
+            database
+              .addMessage(
+                userId,
+                "broadcast",
+                JSON.stringify(buildServerBroadcast(username, message.msg)),
+              )
+              .catch((error) => {
+                console.error(`Erreur d'enregistrement : ${error.message}`);
+              });
 
             continue;
           }
@@ -818,6 +977,10 @@ server.on("error", (error) => {
   console.error(`Server error: ${error.message}`);
 });
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
+  if (REQUIRE_AUTH) {
+    await database.open();
+  }
+
   console.error(`Listening on ${HOST}:${PORT}`);
 });

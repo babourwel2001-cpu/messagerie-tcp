@@ -336,10 +336,35 @@ function buildServerGroupStates(group, states) {
     states,
   };
 }
+
+// Résultat d'une inscription ou d'une connexion.
+function buildServerAuthResult(ok, code) {
+  return {
+    action: ACTIONS.SERVER_AUTH_RESULT,
+    ok,
+    code,
+  };
+}
+
+// Demande l'historique du compte authentifié.
+function buildClientHistory(limit) {
+  return {
+    action: ACTIONS.CLIENT_HISTORY,
+    limit,
+  };
+}
+
+// Envoie l'historique du compte authentifié.
+function buildServerHistory(items) {
+  return {
+    action: ACTIONS.SERVER_HISTORY,
+    items,
+  };
+}
 module.exports = {
-    buildClientKey,
+  buildClientKey,
   buildServerKey,
-  
+
   buildClientHello,
   buildServerHello,
   buildClientSend,
@@ -378,4 +403,7 @@ module.exports = {
   buildServerGroupUnbanned,
   buildServerGroupStates,
   buildClientListGroupStates,
+  buildServerAuthResult,
+  buildClientHistory,
+  buildServerHistory,
 };

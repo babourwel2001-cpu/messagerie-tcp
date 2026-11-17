@@ -3,6 +3,10 @@
 // Les commandes métier restent bloquées tant que le canal
 // chiffré et authentifié n'est pas disponible.
 
+const {
+  buildClientHistory,
+} = require("../common/messages");
+
 const kleur = require("kleur");
 const {
   buildClientKey,
@@ -74,6 +78,7 @@ let clesSession = null;
 // Séquences indépendantes dans chaque direction.
 let sequenceClient = null;
 let sequenceServeur = null;
+let authentifie = false;
 
 let delaiNegociation = null;
 
@@ -223,8 +228,8 @@ client.on("data", (chunk) => {
           sequenceClient = creerCompteurSequence();
           sequenceServeur = creerCompteurSequence();
 
-          envoyerProtege(
-            buildClientHello(name),
+          console.log(
+            "Canal protégé établi. Utilisez register;motdepasse ou login;motdepasse.",
           );
         } catch (error) {
           console.error(
@@ -331,7 +336,30 @@ client.on("data", (chunk) => {
               ),
             );
           }
-        } else {
+        } else if (message.action === "auth-result") {
+          if (message.ok) {
+            if (message.code === "authenticated") {
+              authentifie = true;
+              console.log(kleur.green("Authentification réussie."));
+            } else if (message.code === "registered") {
+              console.log(kleur.green("Compte créé. Connecte-toi avec login;motdepasse."));
+            }
+          } else {
+            console.error(kleur.red(`Authentification refusée : ${message.code}`));
+          }
+        } else if (message.action === "server-history") {
+          console.log(kleur.blue("Historique du compte :"));
+
+          for (const item of message.items) {
+            console.log(
+              kleur.cyan(
+                `[${item.date}] <${item.sender || "inconnu"}> ${item.msg || ""}`,
+              ),
+            );
+          }
+        }
+
+        else {
           console.error(
             kleur.red(`Action serveur inconnue : ${message.action}`),
           );
@@ -547,6 +575,32 @@ rl.on("line", (line) => {
         buildClientListGroupStates(name, groupName),
       );
     }
+  } else if (parts[0] === "register") {
+    const password = parts.slice(1).join(";").trim();
+
+    if (!password) {
+      console.log("Usage : register;motdepasse");
+    } else {
+      envoyerProtege({
+        action: "register",
+        name,
+        password,
+      });
+    }
+  } else if (parts[0] === "login") {
+    const password = parts.slice(1).join(";").trim();
+
+    if (!password) {
+      console.log("Usage : login;motdepasse");
+    } else {
+      envoyerProtege({
+        action: "auth",
+        name,
+        password,
+      });
+    }
+  } else if (parts[0] === "history") {
+    envoyerProtege(buildClientHistory(50));
   } else {
     console.log(
       "Commande inconnue. Utilisez s;destinataire;message, b;message, ls, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",

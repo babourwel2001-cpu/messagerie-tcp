@@ -52,6 +52,15 @@ const ACTIONS = {
   // pour states
   CLIENT_LIST_GROUP_STATES: "states",
   SERVER_GROUP_STATES: "server-group-states",
+
+  // Authentification des comptes.
+CLIENT_REGISTER: "register",
+CLIENT_AUTH: "auth",
+SERVER_AUTH_RESULT: "auth-result",
+
+// Historique persistant du compte.
+CLIENT_HISTORY: "history",
+SERVER_HISTORY: "server-history",
 };
 
 module.exports = { ACTIONS };

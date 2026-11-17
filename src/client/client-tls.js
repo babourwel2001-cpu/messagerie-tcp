@@ -1,6 +1,6 @@
 // Client TLS de la messagerie.
 // TLS assure le chiffrement, l'intégrité et l'authentification du serveur.
-// Le protocole applicatif reste JSON, avec une commande par ligne.
+// Le client peut créer un compte, se connecter et consulter son historique.
 
 const tls = require("node:tls");
 const fs = require("node:fs");
@@ -25,6 +25,7 @@ const {
   buildClientBan,
   buildClientUnban,
   buildClientListGroupStates,
+  buildClientHistory,
 } = require("../common/messages");
 
 const yargs = require("yargs/yargs");
@@ -61,10 +62,9 @@ const client = tls.connect(
   () => {
     console.log(kleur.green("Connexion TLS établie."));
 
-    send({
-      action: "client-hello",
-      sender: name,
-    });
+    console.log(
+      "Utilisez register;motdepasse ou login;motdepasse.",
+    );
   },
 );
 
@@ -91,7 +91,23 @@ client.on("data", (chunk) => {
     try {
       const message = JSON.parse(line);
 
-      if (message.action === "server-hello") {
+      if (message.action === "auth-result") {
+        if (message.ok) {
+          if (message.code === "authenticated") {
+            console.log(kleur.green("Authentification réussie."));
+          } else if (message.code === "registered") {
+            console.log(
+              kleur.green(
+                "Compte créé. Connecte-toi avec login;motdepasse.",
+              ),
+            );
+          }
+        } else {
+          console.error(
+            kleur.red(`Authentification refusée : ${message.code}`),
+          );
+        }
+      } else if (message.action === "server-hello") {
         console.log(kleur.green(message.msg));
       } else if (message.action === "server-error") {
         console.error(kleur.red(message.msg));
@@ -108,6 +124,16 @@ client.on("data", (chunk) => {
           kleur.blue("Utilisateurs connectés :"),
           message.clients.join(", "),
         );
+      } else if (message.action === "server-history") {
+        console.log(kleur.blue("Historique du compte :"));
+
+        for (const item of message.items) {
+          console.log(
+            kleur.cyan(
+              `[${item.date}] <${item.sender || "inconnu"}> ${item.msg || ""}`,
+            ),
+          );
+        }
       } else if (message.action === "server-goodbye") {
         console.log(kleur.green(message.msg));
         client.end();
@@ -190,6 +216,49 @@ rl.on("line", (line) => {
     send(buildClientQuit(name));
     client.end();
     rl.close();
+    return;
+  }
+
+  // Inscription d'un compte.
+  if (command === "register") {
+    const password = parts.slice(1).join(";").trim();
+
+    if (!password) {
+      console.log("Usage : register;motdepasse");
+    } else {
+      send({
+        action: "register",
+        name,
+        password,
+      });
+    }
+
+    rl.prompt();
+    return;
+  }
+
+  // Connexion à un compte.
+  if (command === "login") {
+    const password = parts.slice(1).join(";").trim();
+
+    if (!password) {
+      console.log("Usage : login;motdepasse");
+    } else {
+      send({
+        action: "auth",
+        name,
+        password,
+      });
+    }
+
+    rl.prompt();
+    return;
+  }
+
+  // Historique du compte authentifié.
+  if (command === "history") {
+    send(buildClientHistory(50));
+    rl.prompt();
     return;
   }
 
@@ -311,7 +380,7 @@ rl.on("line", (line) => {
     }
   } else {
     console.log(
-      "Commande inconnue. Utilisez ls, s;dest;message, b;message, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",
+      "Commande inconnue. Utilisez register;motdepasse, login;motdepasse, history, ls, s;dest;message, b;message, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",
     );
   }
 

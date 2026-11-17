@@ -1,6 +1,6 @@
 // Serveur TLS de la messagerie.
 // TLS assure le chiffrement, l'intégrité et l'authentification du serveur.
-// Le protocole applicatif reste JSON, avec une commande par ligne.
+// Les comptes, les mots de passe et l'historique sont gérés avec SQLite.
 
 const tls = require("node:tls");
 const fs = require("node:fs");
@@ -10,6 +10,8 @@ const {
   buildServerMessage,
   buildServerError,
   buildServerBroadcast,
+  buildServerAuthResult,
+  buildServerHistory,
   buildServerGroupCreated,
   buildServerGroups,
   buildServerGroupJoined,
@@ -40,6 +42,9 @@ const {
   disconnectUserFromGroups,
 } = require("./groups");
 
+const database = require("./database");
+const auth = require("./auth");
+
 const HOST = process.env.SERVER_HOST || "127.0.0.1";
 const PORT = Number(process.env.SERVER_PORT || "8443");
 
@@ -59,7 +64,7 @@ function isValidName(name) {
   );
 }
 
-// Repère : TLS exige un certificat et une clé privée côté serveur.
+// Repère : TLS utilise un certificat et une clé privée.
 const server = tls.createServer(
   {
     key: fs.readFileSync("certs/server-key.pem"),
@@ -69,6 +74,8 @@ const server = tls.createServer(
     const address = `${socket.remoteAddress}:${socket.remotePort}`;
 
     let username = null;
+    let userId = null;
+    let authPending = false;
     let buffer = "";
 
     console.log(`CONNECTED TLS from ${address}`);
@@ -98,43 +105,102 @@ const server = tls.createServer(
       }
     });
 
-    // Repère : traitement des commandes métier.
-    function handleMessage(message) {
-      // Enregistrement du client.
-      if (message.action === "client-hello") {
-        if (username !== null) {
-          send(socket, buildServerError("Client déjà enregistré."));
-          return;
-        }
-
-        if (!isValidName(message.sender)) {
-          send(socket, buildServerError("Nom invalide."));
-          return;
-        }
-
-        const requestedName = message.sender.trim();
-
-        if (clients.has(requestedName)) {
-          send(socket, buildServerError("Ce nom est déjà utilisé."));
-          return;
-        }
-
-        username = requestedName;
-
-        clients.set(username, socket);
-
-        console.log(`Utilisateur enregistré : ${username}`);
-
+    // Repère : inscription et connexion des comptes.
+    async function gererAuthentification(message) {
+      if (username !== null) {
         send(
           socket,
-          buildServerHello(username, `Bienvenue ${username}`),
+          buildServerAuthResult(
+            false,
+            auth.CODES.ALREADY_AUTHENTICATED,
+          ),
         );
 
         return;
       }
 
+      if (authPending) {
+        send(
+          socket,
+          buildServerAuthResult(false, auth.CODES.BUSY),
+        );
+
+        return;
+      }
+
+      authPending = true;
+
+      try {
+        const result =
+          message.action === "register"
+            ? await auth.register(message.name, message.password)
+            : await auth.login(message.name, message.password);
+
+        authPending = false;
+
+        if (result.error) {
+          send(
+            socket,
+            buildServerAuthResult(false, result.code),
+          );
+
+          return;
+        }
+
+        // L'inscription crée le compte, mais ne connecte pas automatiquement.
+        if (message.action === "register") {
+          send(
+            socket,
+            buildServerAuthResult(true, result.code),
+          );
+
+          return;
+        }
+
+        // La connexion authentifie le client et l'enregistre.
+        if (clients.has(result.user.name)) {
+          send(
+            socket,
+            buildServerAuthResult(false, auth.CODES.ALREADY_ONLINE),
+          );
+
+          return;
+        }
+
+        username = result.user.name;
+        userId = result.user.id;
+
+        clients.set(username, socket);
+
+        console.log(`Utilisateur authentifié : ${username}`);
+
+        send(
+          socket,
+          buildServerAuthResult(true, result.code),
+        );
+      } catch (error) {
+        authPending = false;
+
+        console.error(`Erreur d'authentification : ${error.message}`);
+
+        send(
+          socket,
+          buildServerAuthResult(false, auth.CODES.SERVER_ERROR),
+        );
+      }
+    }
+
+    // Repère : traitement des commandes métier.
+    function handleMessage(message) {
+      // Inscription et connexion.
+      if (message.action === "register" || message.action === "auth") {
+        gererAuthentification(message);
+
+        return;
+      }
+
       if (username === null) {
-        send(socket, buildServerError("Client non enregistré."));
+        send(socket, buildServerError("Authentification requise."));
         return;
       }
 
@@ -168,10 +234,25 @@ const server = tls.createServer(
           return;
         }
 
-        send(
-          destinationSocket,
-          buildServerMessage(username, message.msg),
+        const messagePrive = buildServerMessage(
+          username,
+          message.msg,
         );
+
+        send(destinationSocket, messagePrive);
+
+        // Enregistre le message privé dans l'historique du compte.
+        database
+          .addMessage(
+            userId,
+            "private",
+            JSON.stringify(messagePrive),
+          )
+          .catch((error) => {
+            console.error(
+              `Erreur d'enregistrement : ${error.message}`,
+            );
+          });
 
         return;
       }
@@ -186,6 +267,52 @@ const server = tls.createServer(
         for (const destinationSocket of clients.values()) {
           send(destinationSocket, messageDiffusion);
         }
+
+        // Enregistre la diffusion dans l'historique du compte.
+        database
+          .addMessage(
+            userId,
+            "broadcast",
+            JSON.stringify(messageDiffusion),
+          )
+          .catch((error) => {
+            console.error(
+              `Erreur d'enregistrement : ${error.message}`,
+            );
+          });
+
+        return;
+      }
+
+      // Historique du compte authentifié.
+      if (message.action === "history") {
+        const limit = Number.isInteger(message.limit)
+          ? Math.min(Math.max(message.limit, 1), 50)
+          : 50;
+
+        database
+          .listMessages(userId, limit)
+          .then((rows) => {
+            const items = rows.map((row) => {
+              const content = JSON.parse(row.body);
+
+              return {
+                date: row.created_at,
+                kind: row.kind,
+                ...content,
+              };
+            });
+
+            send(socket, buildServerHistory(items));
+          })
+          .catch((error) => {
+            send(
+              socket,
+              buildServerError(
+                `Erreur d'historique : ${error.message}`,
+              ),
+            );
+          });
 
         return;
       }
@@ -486,6 +613,9 @@ server.on("error", (error) => {
   console.error(`Server TLS error : ${error.message}`);
 });
 
-server.listen(PORT, HOST, () => {
+server.listen(PORT, HOST, async () => {
+  // Repère : ouverture de la base SQLite au démarrage.
+  await database.open();
+
   console.log(`Serveur TLS en écoute sur ${HOST}:${PORT}`);
 });

@@ -6,3 +6,6 @@ certs/
 *.pem
 *.key
 *.csr
+data/
+*.db
+*.sqlite

@@ -473,6 +473,23 @@ function extraireEnveloppes(tampon) {
     reste,
   };
 }
+
+// Hachage et vérification des mots de passe avec bcrypt.
+// Le hachage est différent du chiffrement : il ne doit pas être réversible.
+const bcrypt = require("bcrypt");
+
+// Limite imposée par bcrypt pour le mot de passe en clair.
+const MAX_PASSWORD_BYTES = 72;
+
+// Hache un mot de passe avec un sel généré automatiquement.
+async function hashPassword(password) {
+  return bcrypt.hash(password, 10);
+}
+
+// Vérifie un mot de passe contre son hachage bcrypt.
+async function verifyPassword(password, passwordHash) {
+  return bcrypt.compare(password, passwordHash);
+}
 module.exports = {
   CURVE,
   PUBLIC_KEY_BYTES,
@@ -492,4 +509,7 @@ module.exports = {
   MAX_BUFFER_BYTES,
   encoderEnveloppe,
   extraireEnveloppes,
+  hashPassword,
+  verifyPassword,
+  MAX_PASSWORD_BYTES,
 };
