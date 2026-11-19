@@ -3,16 +3,16 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "server": "node src/server/server.js",
-    "client": "node src/client/client.js",
-    "server:tls": "node src/server/server-tls.js",
-    "client:tls": "node src/client/client-tls.js",
-    "test": "node --test test/"
+    "test": "mocha test/**/*.test.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "kleur": "^4.1.5",
     "sqlite3": "^6.0.1",
     "yargs": "17.7.2"
+  },
+  "devDependencies": {
+    "mocha": "^10.8.2",
+    "sinon": "^22.1.0"
   }
 }

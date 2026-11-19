@@ -73,7 +73,7 @@ function joinGroupForUser(rawName, username) {
         };
     }
 
-    if (isBanned(group, username)) {
+    if (module.exports.isBanned(group, username)) {
         return {
             error: `Vous êtes banni du groupe ${groupName}.`,
         };

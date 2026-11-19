@@ -7,6 +7,10 @@ const {
   buildClientHistory,
 } = require("../common/messages");
 
+const {
+  parseCommand,
+} = require("./commands");
+
 const kleur = require("kleur");
 const {
   buildClientKey,
@@ -406,206 +410,35 @@ rl.on("line", (line) => {
       buildClientQuit(name),
     );
 
+
     client.end();
     rl.close();
     return;
   }
+
 
   if (etatNegociation !== "canal-actif") {
     console.log(
       "Le canal protégé n'est pas encore disponible.",
     );
 
+
     rl.prompt();
     return;
   }
 
-  const command = line.trim();
 
-  if (command === "") {
-    rl.prompt();
-    return;
+  try {
+    const message = parseCommand(line, name);
+
+
+    if (message !== null) {
+      envoyerProtege(message);
+    }
+  } catch (error) {
+    console.log(error.message);
   }
 
-  const parts = line.split(";");
-
-  if (parts[0] === "s") {
-    const destination = parts[1]?.trim();
-    const text = parts.slice(2).join(";").trim();
-
-    if (!destination || !text) {
-      console.log("Usage : s;destinataire;message");
-    } else {
-      envoyerProtege(
-        buildClientSend(name, destination, text),
-      );
-    }
-  } else if (parts[0] === "b") {
-    const text = parts.slice(1).join(";").trim();
-
-    if (!text) {
-      console.log("Usage : b;message");
-    } else {
-      envoyerProtege(
-        buildClientBroadcast(name, text),
-      );
-    }
-  } else if (parts[0] === "ls") {
-    envoyerProtege(
-      buildClientListClients(name),
-    );
-  } else if (parts[0] === "cg") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : cg;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientCreateGroup(name, groupName),
-      );
-    }
-  } else if (parts[0] === "groups") {
-    envoyerProtege(
-      buildClientListGroups(name),
-    );
-  } else if (parts[0] === "j") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : j;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientJoinGroup(name, groupName),
-      );
-    }
-  } else if (parts[0] === "members") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : members;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientListMembers(name, groupName),
-      );
-    }
-  } else if (parts[0] === "leave") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : leave;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientLeaveGroup(name, groupName),
-      );
-    }
-  } else if (parts[0] === "bg") {
-    const groupName = parts[1]?.trim();
-    const text = parts.slice(2).join(";").trim();
-
-    if (!groupName || !text) {
-      console.log("Usage : bg;nom_du_groupe;message");
-    } else {
-      envoyerProtege(
-        buildClientGroupBroadcast(name, groupName, text),
-      );
-    }
-  } else if (parts[0] === "messages") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : messages;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientListGroupMessages(name, groupName),
-      );
-    }
-  } else if (parts[0] === "invite") {
-    const groupName = parts[1]?.trim();
-    const destination = parts[2]?.trim();
-
-    if (!groupName || !destination) {
-      console.log("Usage : invite;nom_du_groupe;utilisateur");
-    } else {
-      envoyerProtege(
-        buildClientInvite(name, groupName, destination),
-      );
-    }
-  } else if (parts[0] === "kick") {
-    const groupName = parts[1]?.trim();
-    const destination = parts[2]?.trim();
-    const reason = parts.slice(3).join(";").trim() || "aucune raison";
-
-    if (!groupName || !destination) {
-      console.log("Usage : kick;groupe;utilisateur;raison");
-    } else {
-      envoyerProtege(
-        buildClientKick(name, groupName, destination, reason),
-      );
-    }
-  } else if (parts[0] === "ban") {
-    const groupName = parts[1]?.trim();
-    const destination = parts[2]?.trim();
-    const reason = parts.slice(3).join(";").trim() || "aucune raison";
-
-    if (!groupName || !destination) {
-      console.log("Usage : ban;groupe;utilisateur;raison");
-    } else {
-      envoyerProtege(
-        buildClientBan(name, groupName, destination, reason),
-      );
-    }
-  } else if (parts[0] === "unban") {
-    const groupName = parts[1]?.trim();
-    const destination = parts[2]?.trim();
-
-    if (!groupName || !destination) {
-      console.log("Usage : unban;groupe;utilisateur");
-    } else {
-      envoyerProtege(
-        buildClientUnban(name, groupName, destination),
-      );
-    }
-  } else if (parts[0] === "states") {
-    const groupName = parts[1]?.trim();
-
-    if (!groupName) {
-      console.log("Usage : states;nom_du_groupe");
-    } else {
-      envoyerProtege(
-        buildClientListGroupStates(name, groupName),
-      );
-    }
-  } else if (parts[0] === "register") {
-    const password = parts.slice(1).join(";").trim();
-
-    if (!password) {
-      console.log("Usage : register;motdepasse");
-    } else {
-      envoyerProtege({
-        action: "register",
-        name,
-        password,
-      });
-    }
-  } else if (parts[0] === "login") {
-    const password = parts.slice(1).join(";").trim();
-
-    if (!password) {
-      console.log("Usage : login;motdepasse");
-    } else {
-      envoyerProtege({
-        action: "auth",
-        name,
-        password,
-      });
-    }
-  } else if (parts[0] === "history") {
-    envoyerProtege(buildClientHistory(50));
-  } else {
-    console.log(
-      "Commande inconnue. Utilisez s;destinataire;message, b;message, ls, q, cg;groupe, groups, j;groupe, members;groupe ou leave;groupe.",
-    );
-  }
 
   rl.prompt();
 });

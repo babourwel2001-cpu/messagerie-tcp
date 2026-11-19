@@ -1619,7 +1619,7 @@ et l’historique persistant relèvent de la branche
 ---
 
 
-## 24. TP 11 — Implémentation et validation de TLS
+## 24. TP 11 -  Implémentation et validation de TLS
 
 ### Objectif
 
@@ -2199,3 +2199,106 @@ L’intégration combine désormais :
 - La base SQLite est destinée aux tests locaux du projet.
 - Le certificat TLS, lorsqu’il est utilisé, reste auto-signé
   pour les tests locaux.
+
+  ---
+
+## 26. Partie 4 - Tests des commandes, des groupes et des comptes
+
+### Objectif
+
+La partie 4 ajoute une campagne de tests automatisés avec Mocha et Sinon.
+Elle vérifie le fonctionnement des commandes du client, des groupes,
+de l’authentification et de la persistance SQLite.
+
+Les tests sont indépendants : chaque test prépare ses propres données
+et ne dépend pas de l’exécution d’un autre test.
+
+### Outils utilisés
+
+| Outil | Rôle |
+|---|---|
+| Mocha | Lancer les tests et afficher les résultats |
+| `node:assert/strict` | Comparer les valeurs obtenues aux valeurs attendues |
+| Sinon | Créer des fakes et remplacer certaines dépendances |
+| SQLite | Vérifier la persistance réelle des comptes et de l’historique |
+
+### Fichiers de tests
+
+| Fichier | Ce qui est testé |
+|---|---|
+| `test/unit-commands.test.js` | Transformation des commandes saisies en requêtes du protocole |
+| `test/unit-groups.test.js` | Création, adhésion, messages, invitations et modération des groupes |
+| `test/unit-groups-isolation.test.js` | Isolation du contrôle de bannissement avec Sinon |
+| `test/unit-auth.test.js` | Inscription et connexion avec des fakes Sinon |
+| `test/unit-database.test.js` | Persistance réelle dans SQLite |
+
+### Ce qui est vérifié
+
+- La commande `s;david;hello world` produit la requête `client-send` attendue.
+- Les commandes `b`, `ls`, `q`, `register`, `login` et `history` sont correctement transformées.
+- Les douze commandes de groupe produisent les requêtes attendues.
+- Les saisies invalides sont refusées.
+- La création, l’adhésion, le départ, l’invitation, l’exclusion, le bannissement
+  et le débannissement modifient correctement l’état des groupes.
+- Un utilisateur banni ne peut pas rejoindre un groupe.
+- Les messages de groupe sont enregistrés dans l’historique.
+- Les comptes sont créés avec un mot de passe haché par bcrypt.
+- Une connexion avec le bon mot de passe est acceptée.
+- Un mauvais mot de passe ou un compte inexistant est refusé.
+- Les comptes et les messages sont réellement enregistrés dans SQLite.
+- Les données restent disponibles après la fermeture et la réouverture de la base.
+
+### Isolation avec Sinon
+
+Pour tester une fonction sans dépendre de la base de données ou du réseau,
+les tests utilisent des fakes Sinon.
+
+Par exemple, le test de l’adhésion remplace le contrôle de bannissement
+par une fake qui retourne `false` ou `true`. La logique réelle de l’adhésion
+reste exécutée, mais le test contrôle la réponse de la dépendance.
+
+Les fonctions remplacées sont restaurées dans `afterEach` avec :
+
+```js
+sinon.restore();
+```
+
+### Tests de persistance
+
+Les tests de persistance utilisent une base SQLite temporaire.
+La base est ouverte dans `beforeEach`, puis fermée et supprimée
+dans `afterEach`.
+
+Un test vérifie notamment qu’un compte créé reste disponible après
+la fermeture et la réouverture de la base.
+
+### Exécution
+
+Pour lancer tous les tests :
+
+```bash
+npm test
+```
+
+Pour lancer un fichier de test précis :
+
+```bash
+npx mocha test/unit-auth.test.js
+```
+
+### Résultat observé
+
+Exécution du 20 novembre 2026 :
+
+| Indicateur | Valeur |
+|---|---:|
+| Tests exécutés | 62 |
+| Tests réussis | 62 |
+| Tests échoués | 0 |
+
+### Limites
+
+Ces tests vérifient les fonctions de manière isolée ainsi que la
+persistance SQLite. Ils ne remplacent pas les tests d’intégration
+TCP, qui vérifieront les échanges réels entre plusieurs clients
+et le serveur.
